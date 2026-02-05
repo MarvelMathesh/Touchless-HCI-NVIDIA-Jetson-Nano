@@ -1,0 +1,224 @@
+# Gesture Vocabulary Configuration
+# Touchless HCI Media Control System
+
+# =============================================================================
+# Static Gestures (Pose-based)
+# =============================================================================
+# Detection uses MediaPipe hand landmarks for geometric analysis
+# Each gesture has finger states and optional palm/hand conditions
+
+static_gestures:
+  # -------------------------------------------------------------------------
+  # PLAY - Closed Fist
+  # -------------------------------------------------------------------------
+  closed_fist:
+    action: "play_pause"
+    description: "All fingers curled into palm"
+    priority: 1
+    fingers:
+      thumb: "down"
+      index: "down"
+      middle: "down"
+      ring: "down"
+      pinky: "down"
+    min_confidence: 0.85
+    
+  # -------------------------------------------------------------------------
+  # PAUSE - Open Palm
+  # -------------------------------------------------------------------------
+  open_palm:
+    action: "play_pause"
+    description: "All fingers extended, palm facing camera"
+    priority: 1
+    fingers:
+      thumb: "up"
+      index: "up"
+      middle: "up"
+      ring: "up"
+      pinky: "up"
+    palm_facing: "camera"
+    min_confidence: 0.85
+    
+  # -------------------------------------------------------------------------
+  # VOLUME UP - Thumbs Up
+  # -------------------------------------------------------------------------
+  thumb_up:
+    action: "volume_up"
+    description: "Thumb extended upward, other fingers curled"
+    priority: 2
+    fingers:
+      thumb: "up"
+      index: "down"
+      middle: "down"
+      ring: "down"
+      pinky: "down"
+    thumb_orientation: "up"
+    min_confidence: 0.80
+    
+  # -------------------------------------------------------------------------
+  # VOLUME DOWN - Thumbs Down
+  # -------------------------------------------------------------------------
+  thumb_down:
+    action: "volume_down"
+    description: "Thumb extended downward, other fingers curled"
+    priority: 2
+    fingers:
+      thumb: "up"
+      index: "down"
+      middle: "down"
+      ring: "down"
+      pinky: "down"
+    thumb_orientation: "down"
+    min_confidence: 0.80
+    
+  # -------------------------------------------------------------------------
+  # SKIP FORWARD - Victory Sign (Peace)
+  # -------------------------------------------------------------------------
+  victory:
+    action: "seek_forward"
+    description: "Index and middle fingers extended in V shape"
+    priority: 3
+    fingers:
+      thumb: "down"
+      index: "up"
+      middle: "up"
+      ring: "down"
+      pinky: "down"
+    min_confidence: 0.85
+    
+  # -------------------------------------------------------------------------
+  # SKIP BACKWARD - Pointing Up
+  # -------------------------------------------------------------------------
+  pointing_up:
+    action: "seek_backward"
+    description: "Only index finger extended pointing up"
+    priority: 3
+    fingers:
+      thumb: "down"
+      index: "up"
+      middle: "down"
+      ring: "down"
+      pinky: "down"
+    min_confidence: 0.85
+    
+  # -------------------------------------------------------------------------
+  # MUTE TOGGLE - I Love You Sign (Rock)
+  # -------------------------------------------------------------------------
+  i_love_you:
+    action: "mute"
+    description: "Thumb, index, and pinky extended"
+    priority: 4
+    fingers:
+      thumb: "up"
+      index: "up"
+      middle: "down"
+      ring: "down"
+      pinky: "up"
+    min_confidence: 0.85
+
+# =============================================================================
+# Dynamic Gestures (Motion-based)
+# =============================================================================
+# Detection tracks palm center trajectory over time
+
+dynamic_gestures:
+  # -------------------------------------------------------------------------
+  # SEEK FORWARD - Swipe Right
+  # -------------------------------------------------------------------------
+  swipe_right:
+    action: "seek_forward"
+    description: "Quick horizontal swipe from left to right"
+    priority: 5
+    direction: "right"
+    min_distance: 100           # pixels
+    max_duration: 0.5           # seconds
+    min_velocity: 200           # pixels/second
+    required_hand_state: "open_palm"  # Hand must be open during swipe
+    
+  # -------------------------------------------------------------------------
+  # SEEK BACKWARD - Swipe Left
+  # -------------------------------------------------------------------------
+  swipe_left:
+    action: "seek_backward"
+    description: "Quick horizontal swipe from right to left"
+    priority: 5
+    direction: "left"
+    min_distance: 100
+    max_duration: 0.5
+    min_velocity: 200
+    required_hand_state: "open_palm"
+    
+  # -------------------------------------------------------------------------
+  # FULLSCREEN TOGGLE - Circle Motion
+  # -------------------------------------------------------------------------
+  circle:
+    action: "fullscreen"
+    description: "Circular motion with index finger"
+    priority: 6
+    min_points: 15              # Minimum trajectory points
+    min_radius: 50              # Minimum circle radius
+    max_duration: 2.0           # Maximum time to complete
+    circularity_threshold: 0.7  # How circular (1.0 = perfect circle)
+    required_hand_state: "pointing_up"
+
+# =============================================================================
+# Gesture State Machine
+# =============================================================================
+# Defines how gestures transition and which can interrupt others
+
+state_machine:
+  # Idle state - waiting for any gesture
+  idle:
+    transitions_to: ["all"]
+    
+  # After action executed, enter cooldown
+  cooldown:
+    duration: 0.8               # seconds
+    allow_interrupt: false
+    
+  # Held gesture states (for continuous actions like volume)
+  held:
+    volume_repeat_interval: 0.3  # seconds between volume steps when held
+    
+# =============================================================================
+# Priority Rules
+# =============================================================================
+# Lower number = higher priority (checked first)
+# When multiple gestures match, highest priority wins
+
+priority_rules:
+  conflict_resolution: "highest_confidence"  # or "first_detected", "highest_priority"
+  
+# =============================================================================
+# Action Mappings (Quick Reference)
+# =============================================================================
+action_summary:
+  play_pause:
+    gestures: ["closed_fist", "open_palm"]
+    vlc_key: "space"
+    
+  volume_up:
+    gestures: ["thumb_up"]
+    vlc_key: "plus"
+    repeat_on_hold: true
+    
+  volume_down:
+    gestures: ["thumb_down"]
+    vlc_key: "minus"
+    repeat_on_hold: true
+    
+  seek_forward:
+    gestures: ["victory", "swipe_right"]
+    vlc_key: "Right"
+    
+  seek_backward:
+    gestures: ["pointing_up", "swipe_left"]
+    vlc_key: "Left"
+    
+  mute:
+    gestures: ["i_love_you"]
+    vlc_key: "m"
+    
+  fullscreen:
+    gestures: ["circle"]
+    vlc_key: "f"

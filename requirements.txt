@@ -1,0 +1,43 @@
+# Touchless HCI Media Control System
+# NVIDIA Jetson Nano Dependencies
+
+# =============================================================================
+# Core Computer Vision & ML
+# =============================================================================
+mediapipe>=0.10.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# =============================================================================
+# Media Control
+# =============================================================================
+pynput>=1.7.6
+
+# =============================================================================
+# Configuration & Utilities
+# =============================================================================
+PyYAML>=6.0
+
+# =============================================================================
+# Testing
+# =============================================================================
+pytest>=7.0.0
+pytest-benchmark>=4.0.0
+
+# =============================================================================
+# Optional: Performance Monitoring
+# =============================================================================
+psutil>=5.9.0
+
+# =============================================================================
+# Notes for Jetson Nano:
+# =============================================================================
+# 1. MediaPipe may require building from source for optimal GPU support
+#    - Use JetPack 4.6+ 
+#    - Follow: https://google.github.io/mediapipe/getting_started/install.html
+#
+# 2. OpenCV should come pre-installed with JetPack
+#    - Verify CUDA support: python3 -c "import cv2; print(cv2.getBuildInformation())"
+#
+# 3. For xdotool (alternative to pynput):
+#    - sudo apt-get install xdotool

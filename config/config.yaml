@@ -1,0 +1,132 @@
+# Touchless HCI Media Control System Configuration
+# NVIDIA Jetson Nano - Optimized Settings
+
+# =============================================================================
+# Camera Settings
+# =============================================================================
+camera:
+  device_id: 0                    # USB camera device index
+  width: 1280                     # Frame width
+  height: 720                     # Frame height
+  fps: 30                         # Target frame rate
+  buffer_size: 1                  # Minimal buffering for low latency
+  warmup_frames: 30               # Frames to discard on startup
+  flip_horizontal: true           # Mirror mode for intuitive control
+  
+# =============================================================================
+# MediaPipe Hand Detection Settings
+# =============================================================================
+mediapipe:
+  model_complexity: 0             # 0=lite (fast), 1=full (accurate)
+  max_num_hands: 2                # Maximum hands to detect
+  min_detection_confidence: 0.7   # Hand detection threshold
+  min_tracking_confidence: 0.5    # Landmark tracking threshold
+  static_image_mode: false        # False for video stream
+
+# =============================================================================
+# Gesture Recognition Settings
+# =============================================================================
+recognition:
+  # Static gesture thresholds
+  finger_threshold: 0.6           # Finger extension angle threshold
+  confidence_threshold: 0.85      # Minimum gesture confidence to act
+  
+  # Multi-frame consensus
+  buffer_size: 5                  # Frames for majority voting
+  min_consensus: 3                # Minimum votes required (out of buffer_size)
+  
+  # Dynamic gesture detection
+  swipe_min_distance: 100         # Minimum pixels for swipe detection
+  swipe_max_time: 0.5             # Maximum seconds for swipe completion
+  swipe_velocity_threshold: 200   # Minimum pixels/second
+  circle_min_points: 15           # Minimum points to detect circle
+  
+  # Debouncing
+  action_cooldown: 0.8            # Seconds between repeated actions
+  gesture_hold_time: 0.3          # Seconds gesture must be held
+  
+# =============================================================================
+# Media Control Settings (VLC)
+# =============================================================================
+media_control:
+  enabled: true
+  controller: "xdotool"           # xdotool or pynput
+  
+  # VLC keyboard shortcuts
+  keybindings:
+    play_pause: "space"
+    volume_up: "plus"
+    volume_down: "minus"
+    seek_forward: "Right"
+    seek_backward: "Left"
+    mute: "m"
+    fullscreen: "f"
+    next_track: "n"
+    previous_track: "p"
+    stop: "s"
+    
+  # Action feedback
+  visual_feedback: true
+  audio_feedback: false
+
+# =============================================================================
+# Performance Optimization
+# =============================================================================
+performance:
+  # Target metrics
+  target_fps: 25                  # Minimum acceptable FPS
+  target_latency_ms: 30           # Maximum acceptable latency
+  
+  # Threading
+  threaded_capture: true          # Async camera capture
+  inference_queue_size: 2         # Pending inference queue
+  
+  # Detection frequency
+  detect_every_n_frames: 1        # Run full detection every N frames
+  
+  # Resource management
+  enable_gpu: true                # Use GPU acceleration
+  memory_prealloc: true           # Pre-allocate buffers
+  
+# =============================================================================
+# Visualization & Debug
+# =============================================================================
+visualization:
+  enabled: true
+  show_landmarks: true            # Draw hand landmarks
+  show_connections: true          # Draw landmark connections
+  show_gesture_label: true        # Display recognized gesture
+  show_confidence: true           # Display confidence scores
+  show_fps: true                  # Display FPS counter
+  show_latency: true              # Display latency
+  
+  # Colors (BGR format)
+  colors:
+    landmarks: [0, 255, 0]        # Green
+    connections: [255, 255, 255]  # White
+    text: [0, 255, 255]           # Yellow
+    bounding_box: [255, 0, 0]     # Blue
+    
+  # Font settings
+  font_scale: 0.7
+  font_thickness: 2
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  level: "INFO"                   # DEBUG, INFO, WARNING, ERROR
+  log_to_file: true
+  log_file: "logs/hci_system.log"
+  log_performance: true           # Log performance metrics
+  performance_interval: 5.0       # Seconds between performance logs
+
+# =============================================================================
+# Data Collection Mode
+# =============================================================================
+data_collection:
+  output_dir: "data/gestures"
+  save_images: true
+  save_landmarks: true
+  image_format: "jpg"
+  quality: 95
