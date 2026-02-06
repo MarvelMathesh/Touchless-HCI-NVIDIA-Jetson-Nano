@@ -133,7 +133,7 @@ class PerformanceMonitor:
             window_size: Number of frames for rolling average
         """
         self.window_size = window_size
-        self._frame_times: deque = deque(maxlen=window_size)
+        self._frame_times = deque(maxlen=window_size)  # type: deque
         self._stage_times: Dict[str, deque] = {}
         self._frame_start: Optional[float] = None
         self._total_frames: int = 0

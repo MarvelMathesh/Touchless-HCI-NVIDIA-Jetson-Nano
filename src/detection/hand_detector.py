@@ -1,36 +1,37 @@
 """
-Hand Detection Module - Modern MediaPipe Tasks API
-====================================================
+MediaPipe Hand Detection Module
+================================
 
-Uses the new MediaPipe HandLandmarker (Tasks API) instead of legacy mp.solutions.hands.
-Optimized for real-time detection on Jetson Nano.
+Optimized hand landmark detection for NVIDIA Jetson Nano.
+Wraps MediaPipe Hands with configuration and performance tuning.
+
+Python 3.6 compatible version.
 """
 
 import cv2
 import numpy as np
-import logging
-import urllib.request
-import os
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, NamedTuple
-from enum import IntEnum
-from pathlib import Path
-
 import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-from mediapipe import solutions
-from mediapipe.framework.formats import landmark_pb2
+import logging
+from typing import Optional, List, Tuple, NamedTuple
+from enum import IntEnum
+
+# Python 3.6 compatibility: dataclasses backport
+try:
+    from dataclasses import dataclass, field
+except ImportError:
+    # Fallback for Python 3.6 - install python3-dataclasses
+    print("WARNING: dataclasses not found. Install with: pip install dataclasses")
+    # Minimal replacement
+    def dataclass(cls):
+        return cls
+    def field(**kwargs):
+        return None
 
 logger = logging.getLogger(__name__)
 
-# Model download URL
-HAND_LANDMARKER_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
-DEFAULT_MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "hand_landmarker.task"
-
 
 class LandmarkIndex(IntEnum):
-    """Hand landmark indices following MediaPipe convention."""
+    """MediaPipe hand landmark indices for reference."""
     WRIST = 0
     THUMB_CMC = 1
     THUMB_MCP = 2
@@ -54,89 +55,141 @@ class LandmarkIndex(IntEnum):
     PINKY_TIP = 20
 
 
-class Landmark(NamedTuple):
-    """A single landmark point with normalized coordinates."""
-    x: float  # 0.0 to 1.0, normalized by image width
-    y: float  # 0.0 to 1.0, normalized by image height
-    z: float  # Depth relative to wrist
+@dataclass
+class HandDetectorConfig:
+    """MediaPipe Hands configuration."""
+    model_complexity: int = 0  # 0=lite (fast), 1=full (accurate)
+    max_num_hands: int = 2
+    min_detection_confidence: float = 0.7
+    min_tracking_confidence: float = 0.5
+    static_image_mode: bool = False
     
-    def to_pixel(self, width: int, height: int) -> Tuple[int, int]:
+    @classmethod
+    def from_dict(cls, config):
+        """Create config from dictionary."""
+        return cls(
+            model_complexity=config.get("model_complexity", 0),
+            max_num_hands=config.get("max_num_hands", 2),
+            min_detection_confidence=config.get("min_detection_confidence", 0.7),
+            min_tracking_confidence=config.get("min_tracking_confidence", 0.5),
+            static_image_mode=config.get("static_image_mode", False),
+        )
+
+
+class Landmark(NamedTuple):
+    """Single hand landmark with position and visibility."""
+    x: float  # Normalized x coordinate (0-1)
+    y: float  # Normalized y coordinate (0-1)
+    z: float  # Relative depth
+    visibility: float = 1.0
+    
+    def to_pixel(self, width, height):
         """Convert normalized coordinates to pixel coordinates."""
         return (int(self.x * width), int(self.y * height))
 
 
-@dataclass
-class HandDetectorConfig:
-    """Configuration for hand detector."""
-    model_path: str = ""
-    max_num_hands: int = 1
-    min_detection_confidence: float = 0.5
-    min_tracking_confidence: float = 0.5
-    min_presence_confidence: float = 0.5
-    running_mode: str = "VIDEO"  # IMAGE, VIDEO, or LIVE_STREAM
-    
-    @classmethod
-    def from_dict(cls, d: dict) -> "HandDetectorConfig":
-        """Create config from dictionary."""
-        return cls(
-            model_path=d.get("model_path", ""),
-            max_num_hands=d.get("max_num_hands", 1),
-            min_detection_confidence=d.get("min_detection_confidence", 0.5),
-            min_tracking_confidence=d.get("min_tracking_confidence", 0.5),
-            min_presence_confidence=d.get("min_presence_confidence", 0.5),
-            running_mode=d.get("running_mode", "VIDEO"),
-        )
-
-
-@dataclass
 class HandLandmarks:
-    """Container for detected hand landmarks with utility methods."""
-    landmarks: List[Landmark]
-    handedness: str  # "Left" or "Right"
-    confidence: float
-    image_width: int = 1280
-    image_height: int = 720
+    """
+    Container for detected hand landmarks with helper methods.
     
-    def get(self, index: LandmarkIndex) -> Landmark:
+    Provides easy access to landmarks and geometric calculations
+    needed for gesture recognition.
+    """
+    
+    def __init__(self, landmarks, handedness, confidence, image_width, image_height):
+        self.landmarks = landmarks
+        self.handedness = handedness
+        self.confidence = confidence
+        self.image_width = image_width
+        self.image_height = image_height
+        self._landmark_dict = {i: lm for i, lm in enumerate(self.landmarks)}
+    
+    def get(self, index):
         """Get landmark by index."""
-        return self.landmarks[index]
+        return self._landmark_dict[int(index)]
     
-    def get_pixel(self, index: LandmarkIndex) -> Tuple[int, int]:
-        """Get landmark as pixel coordinates."""
+    def get_pixel(self, index):
+        """Get landmark pixel coordinates."""
         lm = self.get(index)
         return lm.to_pixel(self.image_width, self.image_height)
     
     @property
-    def palm_center(self) -> Tuple[float, float]:
-        """Calculate palm center from wrist and finger MCPs."""
+    def wrist(self):
+        """Get wrist landmark."""
+        return self.get(LandmarkIndex.WRIST)
+    
+    @property
+    def palm_center(self):
+        """
+        Calculate palm center as average of wrist and MCP joints.
+        Returns normalized coordinates.
+        """
         wrist = self.get(LandmarkIndex.WRIST)
         index_mcp = self.get(LandmarkIndex.INDEX_MCP)
         middle_mcp = self.get(LandmarkIndex.MIDDLE_MCP)
         ring_mcp = self.get(LandmarkIndex.RING_MCP)
         pinky_mcp = self.get(LandmarkIndex.PINKY_MCP)
         
-        center_x = (wrist.x + index_mcp.x + middle_mcp.x + ring_mcp.x + pinky_mcp.x) / 5
-        center_y = (wrist.y + index_mcp.y + middle_mcp.y + ring_mcp.y + pinky_mcp.y) / 5
+        x = (wrist.x + index_mcp.x + middle_mcp.x + ring_mcp.x + pinky_mcp.x) / 5
+        y = (wrist.y + index_mcp.y + middle_mcp.y + ring_mcp.y + pinky_mcp.y) / 5
         
-        return (center_x, center_y)
+        return (x, y)
     
     @property
-    def palm_center_pixel(self) -> Tuple[int, int]:
+    def palm_center_pixel(self):
         """Get palm center in pixel coordinates."""
         x, y = self.palm_center
         return (int(x * self.image_width), int(y * self.image_height))
     
+    def finger_tip(self, finger):
+        """Get fingertip landmark by name."""
+        tips = {
+            "thumb": LandmarkIndex.THUMB_TIP,
+            "index": LandmarkIndex.INDEX_TIP,
+            "middle": LandmarkIndex.MIDDLE_TIP,
+            "ring": LandmarkIndex.RING_TIP,
+            "pinky": LandmarkIndex.PINKY_TIP,
+        }
+        return self.get(tips[finger.lower()])
+    
+    def finger_mcp(self, finger):
+        """Get finger MCP (knuckle) landmark by name."""
+        mcps = {
+            "thumb": LandmarkIndex.THUMB_MCP,
+            "index": LandmarkIndex.INDEX_MCP,
+            "middle": LandmarkIndex.MIDDLE_MCP,
+            "ring": LandmarkIndex.RING_MCP,
+            "pinky": LandmarkIndex.PINKY_MCP,
+        }
+        return self.get(mcps[finger.lower()])
+    
+    def distance(self, idx1, idx2):
+        """Calculate Euclidean distance between two landmarks (normalized)."""
+        lm1 = self.get(idx1)
+        lm2 = self.get(idx2)
+        return np.sqrt((lm1.x - lm2.x)**2 + (lm1.y - lm2.y)**2 + (lm1.z - lm2.z)**2)
+    
+    def distance_2d(self, idx1, idx2):
+        """Calculate 2D distance between landmarks (ignoring depth)."""
+        lm1 = self.get(idx1)
+        lm2 = self.get(idx2)
+        return np.sqrt((lm1.x - lm2.x)**2 + (lm1.y - lm2.y)**2)
+    
     @property
-    def bounding_box(self) -> Tuple[int, int, int, int]:
-        """Get bounding box (x, y, width, height) in pixels."""
+    def bounding_box(self):
+        """
+        Get bounding box around hand in pixel coordinates.
+        Returns (x, y, width, height).
+        """
         xs = [lm.x for lm in self.landmarks]
         ys = [lm.y for lm in self.landmarks]
         
         min_x = int(min(xs) * self.image_width)
-        min_y = int(min(ys) * self.image_height)
         max_x = int(max(xs) * self.image_width)
+        min_y = int(min(ys) * self.image_height)
         max_y = int(max(ys) * self.image_height)
         
+        # Add padding
         padding = 20
         min_x = max(0, min_x - padding)
         min_y = max(0, min_y - padding)
@@ -145,163 +198,88 @@ class HandLandmarks:
         
         return (min_x, min_y, max_x - min_x, max_y - min_y)
     
-    def distance(self, idx1: LandmarkIndex, idx2: LandmarkIndex) -> float:
-        """Calculate Euclidean distance between two landmarks."""
-        lm1 = self.get(idx1)
-        lm2 = self.get(idx2)
-        return np.sqrt((lm1.x - lm2.x)**2 + (lm1.y - lm2.y)**2 + (lm1.z - lm2.z)**2)
-    
-    def to_numpy(self) -> np.ndarray:
+    def to_numpy(self):
         """Convert landmarks to numpy array of shape (21, 3)."""
         return np.array([[lm.x, lm.y, lm.z] for lm in self.landmarks])
 
 
-def download_model(url: str, save_path: Path) -> bool:
-    """Download the hand landmarker model if not present."""
-    if save_path.exists():
-        logger.info(f"Model already exists at {save_path}")
-        return True
-    
-    try:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Downloading hand landmarker model to {save_path}...")
-        urllib.request.urlretrieve(url, save_path)
-        logger.info("Model download complete!")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to download model: {e}")
-        return False
-
-
 class HandDetector:
     """
-    Hand detection wrapper using MediaPipe Tasks API (HandLandmarker).
+    MediaPipe Hands wrapper optimized for Jetson Nano.
     
-    This is the modern API recommended by Google, replacing the legacy
-    mp.solutions.hands module.
-    
-    Example:
-        >>> config = HandDetectorConfig()
-        >>> detector = HandDetector(config)
-        >>> detector.start()
-        >>> hands = detector.detect(rgb_image)  # RGB format!
-        >>> detector.stop()
+    Compatible with MediaPipe 0.8.5 and Python 3.6.
     """
     
-    # Hand connections for drawing
-    HAND_CONNECTIONS = [
-        (0, 1), (1, 2), (2, 3), (3, 4),      # Thumb
-        (0, 5), (5, 6), (6, 7), (7, 8),      # Index
-        (5, 9), (9, 10), (10, 11), (11, 12), # Middle
-        (9, 13), (13, 14), (14, 15), (15, 16), # Ring
-        (13, 17), (17, 18), (18, 19), (19, 20), # Pinky
-        (0, 17),                               # Palm base
-    ]
-    
-    def __init__(self, config: Optional[HandDetectorConfig] = None):
+    def __init__(self, config=None):
         self.config = config or HandDetectorConfig()
-        self._landmarker: Optional[vision.HandLandmarker] = None
-        self._frame_timestamp = 0
+        self._hands = None
+        self._mp_hands = mp.solutions.hands
+        self._mp_drawing = mp.solutions.drawing_utils
     
-    def start(self) -> bool:
-        """Initialize the hand landmarker."""
-        try:
-            # Determine model path
-            model_path = self.config.model_path or str(DEFAULT_MODEL_PATH)
-            
-            # Download model if needed
-            if not Path(model_path).exists():
-                if not download_model(HAND_LANDMARKER_MODEL_URL, Path(model_path)):
-                    logger.error("Could not download hand landmarker model")
-                    return False
-            
-            # Determine running mode
-            if self.config.running_mode == "IMAGE":
-                running_mode = vision.RunningMode.IMAGE
-            elif self.config.running_mode == "VIDEO":
-                running_mode = vision.RunningMode.VIDEO
-            else:
-                running_mode = vision.RunningMode.VIDEO  # Default to VIDEO for real-time
-            
-            # Create options
-            base_options = python.BaseOptions(model_asset_path=model_path)
-            
-            options = vision.HandLandmarkerOptions(
-                base_options=base_options,
-                running_mode=running_mode,
-                num_hands=self.config.max_num_hands,
-                min_hand_detection_confidence=self.config.min_detection_confidence,
-                min_hand_presence_confidence=self.config.min_presence_confidence,
-                min_tracking_confidence=self.config.min_tracking_confidence,
-            )
-            
-            # Create the landmarker
-            self._landmarker = vision.HandLandmarker.create_from_options(options)
-            
-            logger.info(f"HandLandmarker initialized with model: {model_path}")
-            logger.info(f"Running mode: {self.config.running_mode}, Max hands: {self.config.max_num_hands}")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize HandLandmarker: {e}")
-            return False
+    def start(self):
+        """Initialize MediaPipe Hands."""
+        logger.info("Initializing MediaPipe Hands (complexity={}, max_hands={})".format(
+            self.config.model_complexity, self.config.max_num_hands))
+        
+        # MediaPipe 0.8.5 API
+        self._hands = self._mp_hands.Hands(
+            static_image_mode=self.config.static_image_mode,
+            max_num_hands=self.config.max_num_hands,
+            min_detection_confidence=self.config.min_detection_confidence,
+            min_tracking_confidence=self.config.min_tracking_confidence,
+        )
+        
+        logger.info("MediaPipe Hands initialized")
     
-    def stop(self) -> None:
-        """Release resources."""
-        if self._landmarker:
-            self._landmarker.close()
-            self._landmarker = None
-        logger.info("HandLandmarker stopped")
+    def stop(self):
+        """Release MediaPipe resources."""
+        if self._hands:
+            self._hands.close()
+            self._hands = None
+        logger.info("MediaPipe Hands stopped")
     
-    def detect(self, image: np.ndarray, timestamp_ms: Optional[int] = None) -> List[HandLandmarks]:
+    def detect(self, image):
         """
-        Detect hands in the given image.
+        Detect hands in image.
         
         Args:
-            image: RGB image as numpy array (H, W, 3)
-            timestamp_ms: Timestamp in milliseconds (required for VIDEO mode)
+            image: RGB image (numpy array)
             
         Returns:
             List of HandLandmarks for each detected hand
         """
-        if self._landmarker is None:
-            logger.warning("HandLandmarker not initialized. Call start() first.")
+        if self._hands is None:
+            logger.warning("HandDetector not started")
             return []
         
         height, width = image.shape[:2]
         
-        # Create MediaPipe Image
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+        # Process image
+        results = self._hands.process(image)
         
-        # Detect based on running mode
-        if self.config.running_mode == "IMAGE":
-            result = self._landmarker.detect(mp_image)
-        else:
-            # VIDEO mode requires timestamp
-            if timestamp_ms is None:
-                self._frame_timestamp += 33  # ~30 FPS
-                timestamp_ms = self._frame_timestamp
-            result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
+        if not results.multi_hand_landmarks:
+            return []
         
-        # Convert to HandLandmarks
         hands = []
-        for i, hand_landmarks in enumerate(result.hand_landmarks):
+        
+        for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
             # Get handedness
-            handedness = "Right"
-            if result.handedness and len(result.handedness) > i:
-                handedness = result.handedness[i][0].category_name
-            
-            # Get confidence
+            handedness = "Unknown"
             confidence = 0.0
-            if result.handedness and len(result.handedness) > i:
-                confidence = result.handedness[i][0].score
+            if results.multi_handedness:
+                hand_info = results.multi_handedness[idx]
+                handedness = hand_info.classification[0].label
+                confidence = hand_info.classification[0].score
             
-            # Convert landmarks
-            landmarks = [
-                Landmark(x=lm.x, y=lm.y, z=lm.z)
-                for lm in hand_landmarks
-            ]
+            # Extract landmarks
+            landmarks = []
+            for lm in hand_landmarks.landmark:
+                landmarks.append(Landmark(
+                    x=lm.x,
+                    y=lm.y,
+                    z=lm.z,
+                    visibility=getattr(lm, 'visibility', 1.0)
+                ))
             
             hands.append(HandLandmarks(
                 landmarks=landmarks,
@@ -311,51 +289,46 @@ class HandDetector:
                 image_height=height,
             ))
         
+        # Sort by confidence (highest first)
+        hands.sort(key=lambda h: h.confidence, reverse=True)
+        
         return hands
     
-    def draw_landmarks(
-        self,
-        image: np.ndarray,
-        hand: HandLandmarks,
-        landmark_color: Tuple[int, int, int] = (0, 255, 0),
-        connection_color: Tuple[int, int, int] = (255, 255, 255),
-        landmark_radius: int = 5,
-        connection_thickness: int = 2,
-    ) -> np.ndarray:
+    def draw_landmarks(self, image, hand, color=(0, 255, 0), thickness=2):
         """
-        Draw hand landmarks and connections on an image.
+        Draw hand landmarks on image.
         
         Args:
             image: BGR image to draw on
-            hand: HandLandmarks to visualize
+            hand: HandLandmarks to draw
+            color: BGR color tuple
+            thickness: Line thickness
             
         Returns:
             Image with landmarks drawn
         """
         # Draw connections
-        for start_idx, end_idx in self.HAND_CONNECTIONS:
+        connections = self._mp_hands.HAND_CONNECTIONS
+        
+        for connection in connections:
+            start_idx, end_idx = connection
             start = hand.get_pixel(LandmarkIndex(start_idx))
             end = hand.get_pixel(LandmarkIndex(end_idx))
-            cv2.line(image, start, end, connection_color, connection_thickness)
+            cv2.line(image, start, end, (255, 255, 255), thickness)
         
         # Draw landmarks
         for i, lm in enumerate(hand.landmarks):
-            pos = lm.to_pixel(hand.image_width, hand.image_height)
-            
-            # Different colors for fingertips
-            if i in [4, 8, 12, 16, 20]:
-                color = (0, 0, 255)  # Red for fingertips
-            else:
-                color = landmark_color
-            
-            cv2.circle(image, pos, landmark_radius, color, -1)
+            x, y = lm.to_pixel(hand.image_width, hand.image_height)
+            cv2.circle(image, (x, y), 5, color, -1)
         
         return image
     
     def __enter__(self):
+        """Context manager entry."""
         self.start()
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
         self.stop()
         return False

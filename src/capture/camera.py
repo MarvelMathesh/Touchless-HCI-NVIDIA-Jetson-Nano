@@ -25,10 +25,10 @@ class CameraConfig:
     width: int = 1280
     height: int = 720
     fps: int = 30
-    buffer_size: int = 1
-    warmup_frames: int = 30
-    flip_horizontal: bool = True
+    buffer_size: int = 1  # Minimal buffering for low latency
     threaded: bool = True
+    flip_horizontal: bool = False
+    warmup_frames: int = 5  # Reduced from 30 for faster startup
     
     @classmethod
     def from_dict(cls, config: dict) -> "CameraConfig":
@@ -89,51 +89,72 @@ class Camera:
         self._latest_frame: Optional[Frame] = None
         
         # Performance tracking
-        self._capture_times: deque = deque(maxlen=30)
+        self._capture_times = deque(maxlen=30)  # type: deque
         
     def start(self) -> bool:
         """
-        Initialize and start camera capture.
+        Start camera capture.
         
         Returns:
-            bool: True if camera started successfully
+            True if camera started successfully
         """
-        logger.info(f"Starting camera (device={self.config.device_id}, "
-                   f"{self.config.width}x{self.config.height}@{self.config.fps}fps)")
+        logger.info("Starting camera (device={}, {}x{}@{}fps)".format(
+            self.config.device_id, self.config.width, self.config.height, self.config.fps))
         
-        # Initialize camera
-        self._cap = cv2.VideoCapture(self.config.device_id)
+        # Try V4L2 backend first (works better on Jetson with USB cameras)
+        for backend in [cv2.CAP_V4L2, cv2.CAP_ANY]:
+            if backend == cv2.CAP_V4L2:
+                logger.info("Trying V4L2 backend...")
+                self._cap = cv2.VideoCapture(self.config.device_id, backend)
+            else:
+                logger.info("Trying default backend...")
+                self._cap = cv2.VideoCapture(self.config.device_id)
+            
+            if not self._cap.isOpened():
+                logger.warning("Backend failed, trying next...")
+                continue
+            
+            # Try to set resolution and FPS
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
+            self._cap.set(cv2.CAP_PROP_FPS, self.config.fps)
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, self.config.buffer_size)
+            
+            # Verify we can actually read frames
+            test_ret, test_frame = self._cap.read()
+            if test_ret and test_frame is not None:
+                # Success!
+                break
+            else:
+                logger.warning("Can't read frames, trying next backend...")
+                self._cap.release()
+                self._cap = None
         
-        if not self._cap.isOpened():
-            logger.error(f"Failed to open camera device {self.config.device_id}")
+        if self._cap is None or not self._cap.isOpened():
+            logger.error("Failed to open camera device {}".format(self.config.device_id))
             return False
         
-        # Configure camera
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
-        self._cap.set(cv2.CAP_PROP_FPS, self.config.fps)
-        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, self.config.buffer_size)
-        
-        # Verify settings
+        # Get actual resolution and FPS
         actual_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
         
-        logger.info(f"Camera initialized: {actual_width}x{actual_height}@{actual_fps}fps")
+        logger.info("Camera initialized: {}x{}@{}fps".format(actual_width, actual_height, actual_fps))
         
-        # Warmup - discard initial frames for exposure stabilization
-        logger.info(f"Warming up camera ({self.config.warmup_frames} frames)...")
-        for _ in range(self.config.warmup_frames):
-            self._cap.read()
+        # Warm up camera
+        if self.config.warmup_frames > 0:
+            logger.info("Warming up camera ({} frames)...".format(self.config.warmup_frames))
+            for _ in range(self.config.warmup_frames):
+                self._cap.read()
         
         self._running = True
         self._frame_number = 0
         
-        # Start capture thread if configured
+        # Start threaded capture if enabled
         if self.config.threaded:
+            logger.info("Started threaded capture")
             self._thread = threading.Thread(target=self._capture_loop, daemon=True)
             self._thread.start()
-            logger.info("Started threaded capture")
         
         return True
     

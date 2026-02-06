@@ -9,7 +9,7 @@ import subprocess
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict, Callable, List
 from enum import Enum, auto
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ class MediaController:
         self.config = config or MediaControllerConfig()
         self._last_action: Optional[MediaAction] = None
         self._last_action_time: float = 0.0
-        self._action_callbacks: list[Callable[[MediaAction, bool], None]] = []
+        self._action_callbacks = []  # type: List[Callable[[MediaAction, bool], None]]
         
         # Check if xdotool is available
         self._xdotool_available = self._check_xdotool()
@@ -119,17 +119,18 @@ class MediaController:
             logger.warning("xdotool not found. Media control will be simulated.")
     
     def _check_xdotool(self) -> bool:
-        """Check if xdotool is installed and available."""
+        """Check if xdotool is available."""
         try:
+            # Python 3.6 compatible - use stdout/stderr instead of capture_output
             result = subprocess.run(
                 ["which", "xdotool"],
-                capture_output=True,
-                text=True,
-                timeout=5
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=1
             )
             return result.returncode == 0
         except Exception as e:
-            logger.warning(f"Error checking xdotool: {e}")
+            logger.warning("Error checking xdotool: {}".format(e))
             return False
     
     def execute(self, action_name: str) -> bool:
@@ -176,42 +177,32 @@ class MediaController:
     
     def _send_key(self, key: str) -> bool:
         """
-        Send a keyboard key to VLC using xdotool.
+        Send keypress using xdotool.
         
         Args:
-            key: Key name (e.g., "space", "Left", "plus")
+            key: Key combination to send (e.g., "space", "ctrl+Up")
             
         Returns:
-            True if key was sent successfully
+            True if successful
         """
         if not self._xdotool_available:
-            # Simulation mode
-            logger.debug(f"[SIMULATED] Sending key: {key}")
+            logger.debug("Simulating key: {}".format(key))
             return True
         
         try:
-            # Normalize key names for xdotool
-            xdotool_key = self._normalize_key(key)
-            
-            # Send key to active window
+            # Python 3.6 compatible
             result = subprocess.run(
-                ["xdotool", "key", xdotool_key],
-                capture_output=True,
-                text=True,
-                timeout=5
+                ["xdotool", "key", key],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=1.0
             )
-            
-            if result.returncode != 0:
-                logger.error(f"xdotool error: {result.stderr}")
-                return False
-            
-            return True
-            
+            return result.returncode == 0
         except subprocess.TimeoutExpired:
-            logger.error("xdotool command timed out")
+            logger.warning("xdotool command timed out for key: {}".format(key))
             return False
         except Exception as e:
-            logger.error(f"Error sending key: {e}")
+            logger.error("Error sending key {}: {}".format(key, e))
             return False
     
     def _normalize_key(self, key: str) -> str:

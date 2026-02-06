@@ -17,23 +17,36 @@ camera:
 # MediaPipe Hand Detection Settings
 # =============================================================================
 mediapipe:
-  model_complexity: 0             # 0=lite (fast), 1=full (accurate)
-  max_num_hands: 2                # Maximum hands to detect
-  min_detection_confidence: 0.7   # Hand detection threshold
-  min_tracking_confidence: 0.5    # Landmark tracking threshold
+  # Model settings
+  model_complexity: 0  # 0=lite (fast), 1=full (accurate)
+  
+  # Detection settings
+  max_num_hands: 1  # Changed from 2 - single hand for better focus
+  min_detection_confidence: 0.7  # Increased from 0.7 - stricter detection
+  min_tracking_confidence: 0.6  # Increased from 0.5 - better tracking
   static_image_mode: false        # False for video stream
 
 # =============================================================================
 # Gesture Recognition Settings
 # =============================================================================
 recognition:
-  # Static gesture thresholds
-  finger_threshold: 0.6           # Finger extension angle threshold
-  confidence_threshold: 0.85      # Minimum gesture confidence to act
+  # Gesture classification settings
+  finger_threshold: 0.7  # Increased from 0.6 - stricter finger detection
+  confidence_threshold: 0.75  # Increased from 0.5 - only high-confidence gestures
+  debug: false
   
-  # Multi-frame consensus
-  buffer_size: 5                  # Frames for majority voting
-  min_consensus: 3                # Minimum votes required (out of buffer_size)
+  # Gesture buffer (temporal smoothing)
+  buffer_size: 7  # Increased from 5 - more frames for consensus
+  consensus_threshold: 0.6  # Increased from 0.5 - 60% of frames must agree
+  gesture_hold_time: 0.5  # Increased from 0.3s - must hold gesture longer
+  action_cooldown: 1.0  # Increased from 0.8s - prevent rapid fire actions
+  
+  # Dynamic gesture settings (swipes, circles)
+  max_trajectory_points: 15  # Reduced from 20 - shorter history
+  min_swipe_distance: 0.20  # Increased from 0.15 - longer swipe required
+  min_swipe_velocity: 0.5  # Increased from 0.3 - faster swipe required
+  min_circle_radius: 0.08  # Increased from 0.05 - larger circle required
+  circle_circularity_threshold: 0.75  # Increased from 0.6 - more circularrequired (out of buffer_size)
   
   # Dynamic gesture detection
   swipe_min_distance: 100         # Minimum pixels for swipe detection

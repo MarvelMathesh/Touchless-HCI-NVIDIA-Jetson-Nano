@@ -9,7 +9,7 @@ Reduces false positives and stabilizes gesture detection.
 import time
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Deque
+from typing import Optional, List, Dict, Tuple
 from collections import deque, Counter
 
 # Import local types
@@ -76,13 +76,13 @@ class GestureBuffer:
     def __init__(self, config: Optional[GestureBufferConfig] = None):
         self.config = config or GestureBufferConfig()
         
-        self._buffer: Deque[BufferedGesture] = deque(maxlen=self.config.buffer_size)
+        self._buffer = deque(maxlen=self.config.buffer_size)  # type: deque
         self._last_confirmed: Optional[Gesture] = None
         self._last_action_time: float = 0.0
         self._gesture_start_time: Dict[GestureType, float] = {}
         self._consecutive_none: int = 0
     
-    def update(self, gesture: Gesture) -> tuple[Optional[Gesture], bool]:
+    def update(self, gesture: Gesture) -> Tuple[Optional[Gesture], bool]:
         """
         Add gesture to buffer and check for consensus.
         

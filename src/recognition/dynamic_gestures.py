@@ -11,7 +11,7 @@ import math
 import numpy as np
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, List, Tuple, Deque
+from typing import Optional, List, Tuple
 from collections import deque
 from enum import Enum, auto
 
@@ -92,7 +92,7 @@ class DynamicGestureDetector:
     
     def __init__(self, config: Optional[DynamicGestureConfig] = None):
         self.config = config or DynamicGestureConfig()
-        self._trajectory: Deque[TrajectoryPoint] = deque(maxlen=self.config.max_trajectory_points)
+        self._trajectory = deque(maxlen=self.config.max_trajectory_points)  # type: deque
         self._last_update: float = 0.0
         self._last_gesture_time: float = 0.0
         self._gesture_cooldown: float = 0.5  # Prevent rapid re-detection
