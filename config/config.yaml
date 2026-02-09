@@ -1,71 +1,76 @@
-# Touchless HCI Media Control System Configuration
-# NVIDIA Jetson Nano - Optimized Settings
+# ============================================================================
+# Touchless Media Control - Edge AI System Configuration
+# Optimized for NVIDIA Jetson Nano (ARM Cortex-A57 + Maxwell GPU)
+# ============================================================================
 
-# =============================================================================
-# Camera Settings
-# =============================================================================
+system:
+  name: "Touchless Media Control"
+  version: "2.0.0"
+  mode: "control"  # control | demo | benchmark | calibration
+
+# --- Camera Configuration ---
 camera:
-  device_id: 0                    # USB camera device index
-  width: 1280                     # Frame width
-  height: 720                     # Frame height
-  fps: 30                         # Target frame rate
-  buffer_size: 1                  # Minimal buffering for low latency
-  warmup_frames: 30               # Frames to discard on startup
-  flip_horizontal: true           # Mirror mode for intuitive control
-  
-# =============================================================================
-# MediaPipe Hand Detection Settings
-# =============================================================================
-mediapipe:
-  # Model settings
-  model_complexity: 0  # 0=lite (fast), 1=full (accurate)
-  
-  # Detection settings
-  max_num_hands: 1  # Changed from 2 - single hand for better focus
-  min_detection_confidence: 0.7  # Increased from 0.7 - stricter detection
-  min_tracking_confidence: 0.6  # Increased from 0.5 - better tracking
-  static_image_mode: false        # False for video stream
+  device_id: 0
+  width: 640
+  height: 480
+  fps: 30
+  backend: "v4l2"           # v4l2 | gstreamer | auto
+  buffer_size: 1            # Minimize latency (1 frame buffer)
+  flip_horizontal: true     # Mirror mode for intuitive control
+  auto_exposure: true
+  warmup_frames: 15         # Frames to discard on startup
+  capture_timeout_ms: 100
 
-# =============================================================================
-# Gesture Recognition Settings
-# =============================================================================
+# --- MediaPipe Hand Detection ---
+# Note: model_complexity is only available in MediaPipe >= 0.8.9
+# On Jetson Nano with MediaPipe 0.8.5, it will be silently ignored
+mediapipe:
+  model_complexity: 0       # 0=Lite (fastest), 1=Full (ignored on 0.8.5)
+  max_num_hands: 2          # Support multi-user
+  min_detection_confidence: 0.6
+  min_tracking_confidence: 0.5
+  static_image_mode: false  # Video stream mode (faster)
+
+# --- Gesture Recognition ---
 recognition:
-  # Gesture classification settings
-  finger_threshold: 0.7  # Increased from 0.6 - stricter finger detection
-  confidence_threshold: 0.75  # Increased from 0.5 - only high-confidence gestures
-  debug: false
-  
-  # Gesture buffer (temporal smoothing)
-  buffer_size: 7  # Increased from 5 - more frames for consensus
-  consensus_threshold: 0.6  # Increased from 0.5 - 60% of frames must agree
-  gesture_hold_time: 0.5  # Increased from 0.3s - must hold gesture longer
-  action_cooldown: 1.0  # Increased from 0.8s - prevent rapid fire actions
-  
-  # Dynamic gesture settings (swipes, circles)
-  max_trajectory_points: 15  # Reduced from 20 - shorter history
-  min_swipe_distance: 0.20  # Increased from 0.15 - longer swipe required
-  min_swipe_velocity: 0.5  # Increased from 0.3 - faster swipe required
-  min_circle_radius: 0.08  # Increased from 0.05 - larger circle required
-  circle_circularity_threshold: 0.75  # Increased from 0.6 - more circularrequired (out of buffer_size)
-  
+  # Static gesture thresholds (per-gesture tuning)
+  confidence_thresholds:
+    thumbs_up: 0.85
+    peace_sign: 0.82
+    ok_sign: 0.80
+    fist: 0.85
+    open_palm: 0.82
+    finger_point: 0.75
+    thumbs_down: 0.83
+    default: 0.80
+
+  # Temporal filtering
+  temporal:
+    window_size: 5           # Frames for consensus voting
+    consensus_ratio: 0.6     # 60% agreement needed
+    recency_weight: 0.2      # Higher = more weight on recent frames
+
   # Dynamic gesture detection
-  swipe_min_distance: 100         # Minimum pixels for swipe detection
-  swipe_max_time: 0.5             # Maximum seconds for swipe completion
-  swipe_velocity_threshold: 200   # Minimum pixels/second
-  circle_min_points: 15           # Minimum points to detect circle
-  
-  # Debouncing
-  action_cooldown: 0.8            # Seconds between repeated actions
-  gesture_hold_time: 0.3          # Seconds gesture must be held
-  
-# =============================================================================
-# Media Control Settings (VLC)
-# =============================================================================
-media_control:
-  enabled: true
-  controller: "xdotool"           # xdotool or pynput
-  
-  # VLC keyboard shortcuts
+  dynamic:
+    min_velocity: 200        # pixels/sec for swipe detection
+    trajectory_window: 10    # Frames to track for trajectory
+    swipe_min_distance: 80   # Minimum pixels for swipe
+    circle_min_points: 15    # Minimum points for circle detection
+
+  # Dwell time for static gestures (ms)
+  dwell_time_ms: 400
+
+# --- Debouncing & Action Control ---
+debouncing:
+  cooldown_ms: 500           # Minimum time between different actions
+  repeat_cooldown_ms: 300    # Cooldown for same action repeat
+  hold_repeat_ms: 200        # Rate for held actions (volume)
+  max_queue_size: 5          # Action queue limit
+
+# --- Media Control (VLC) ---
+media:
+  player: "vlc"
+  control_method: "xdotool"  # xdotool | dbus | python-vlc
   keybindings:
     play_pause: "space"
     volume_up: "plus"
@@ -74,72 +79,77 @@ media_control:
     seek_backward: "Left"
     mute: "m"
     fullscreen: "f"
-    next_track: "n"
-    previous_track: "p"
-    stop: "s"
-    
-  # Action feedback
-  visual_feedback: true
-  audio_feedback: false
+    quit_player: "q"
+  seek_seconds: 10
+  volume_step: 5
 
-# =============================================================================
-# Performance Optimization
-# =============================================================================
+# --- User Adaptation Engine ---
+adaptation:
+  enabled: true
+  calibration_duration_sec: 30
+  profile_storage: "data/profiles"
+  max_profiles: 10
+  learning_rate: 0.1
+  adaptation_window: 50      # Recent gestures to consider
+  face_detection_for_user_id: false  # Use face for user switching
+
+# --- Performance Optimization ---
 performance:
-  # Target metrics
-  target_fps: 25                  # Minimum acceptable FPS
-  target_latency_ms: 30           # Maximum acceptable latency
-  
-  # Threading
-  threaded_capture: true          # Async camera capture
-  inference_queue_size: 2         # Pending inference queue
-  
-  # Detection frequency
-  detect_every_n_frames: 1        # Run full detection every N frames
-  
-  # Resource management
-  enable_gpu: true                # Use GPU acceleration
-  memory_prealloc: true           # Pre-allocate buffers
-  
-# =============================================================================
-# Visualization & Debug
-# =============================================================================
+  target_fps: 28
+  max_latency_ms: 30
+  enable_gpu: true
+  enable_threading: true
+  thermal_throttle_temp: 70   # Celsius - reduce FPS
+  thermal_critical_temp: 80   # Celsius - CPU-only mode
+  frame_skip_threshold: 50    # ms - skip frame if processing too slow
+  metrics_window: 100         # Frames for rolling average
+
+# --- Visualization ---
 visualization:
   enabled: true
-  show_landmarks: true            # Draw hand landmarks
-  show_connections: true          # Draw landmark connections
-  show_gesture_label: true        # Display recognized gesture
-  show_confidence: true           # Display confidence scores
-  show_fps: true                  # Display FPS counter
-  show_latency: true              # Display latency
-  
-  # Colors (BGR format)
+  show_landmarks: true
+  show_connections: true
+  show_fps: true
+  show_latency: true
+  show_gesture: true
+  show_confidence_bar: true
+  show_gesture_legend: true
+  show_hand_bbox: true
+  window_name: "Touchless Media Control"
+
   colors:
-    landmarks: [0, 255, 0]        # Green
-    connections: [255, 255, 255]  # White
-    text: [0, 255, 255]           # Yellow
-    bounding_box: [255, 0, 0]     # Blue
-    
-  # Font settings
-  font_scale: 0.7
-  font_thickness: 2
+    landmark: [0, 255, 0]       # Green
+    connection: [255, 255, 255]  # White
+    bbox: [0, 255, 255]         # Yellow
+    text: [255, 255, 255]       # White
+    fps_good: [0, 255, 0]       # Green (>25 FPS)
+    fps_warn: [0, 255, 255]     # Yellow (15-25 FPS)
+    fps_bad: [0, 0, 255]        # Red (<15 FPS)
+    confidence_high: [0, 255, 0]
+    confidence_mid: [0, 255, 255]
+    confidence_low: [0, 0, 255]
+    action_feedback: [255, 200, 0]
 
-# =============================================================================
-# Logging
-# =============================================================================
+  dashboard:
+    opacity: 0.7
+    position: "top"   # top | bottom
+    height: 80
+
+# --- Logging ---
 logging:
-  level: "INFO"                   # DEBUG, INFO, WARNING, ERROR
-  log_to_file: true
-  log_file: "logs/hci_system.log"
-  log_performance: true           # Log performance metrics
-  performance_interval: 5.0       # Seconds between performance logs
+  level: "INFO"          # DEBUG | INFO | WARNING | ERROR
+  file: "logs/system.log"
+  max_size_mb: 10
+  backup_count: 3
+  log_performance: true
+  log_gestures: true
+  log_actions: true
 
-# =============================================================================
-# Data Collection Mode
-# =============================================================================
+# --- Data Collection ---
 data_collection:
   output_dir: "data/gestures"
-  save_images: true
-  save_landmarks: true
   image_format: "jpg"
-  quality: 95
+  save_landmarks: true
+  save_metadata: true
+  samples_per_gesture: 400
+  auto_augment: true

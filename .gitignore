@@ -1,63 +1,40 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
+dist/
+build/
 *.egg
 
-# Virtual environments
+# Virtual environment
 venv/
-ENV/
 env/
 .venv/
 
-# IDE settings
-.idea/
+# IDE
 .vscode/
+.idea/
 *.swp
 *.swo
-*~
-
-# Jupyter Notebook
-.ipynb_checkpoints/
-
-# pytest
-.pytest_cache/
-.coverage
-htmlcov/
-
-# MediaPipe model files (downloaded at runtime)
-models/*.task
 
 # Logs
-logs/*.log
+logs/
 *.log
 
-# Dataset (can be large)
+# Data (large files)
 data/gestures/*/
+data/profiles/
+!data/gestures/.gitkeep
+!data/profiles/.gitkeep
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# Local config overrides
-config/local.yaml
+# Models
+*.tflite
+*.onnx
+*.engine
+*.plan
