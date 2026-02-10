@@ -157,3 +157,19 @@ class CameraManager:
 
     def __exit__(self, *args):
         self.stop()
+    def set_fps(self, new_fps: int):
+        """
+        Dynamically updates the target capture rate.
+        Lowering FPS reduces CPU/GPU load significantly on Jetson Nano.
+        """
+        if new_fps <= 0:
+            return
+            
+        self._target_fps = new_fps
+        # Calculate the delay in seconds (e.g., 30 FPS -> 0.033s)
+        self._frame_delay = 1.0 / new_fps
+        
+        # Optional: Log the change if it's a significant shift
+        import logging
+        logging.getLogger(__name__).debug(f"Camera capture rate set to {new_fps} FPS")
+

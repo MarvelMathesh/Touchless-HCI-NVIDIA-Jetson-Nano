@@ -44,6 +44,7 @@ from modules.intelligence.user_profiler import UserProfiler
 from modules.intelligence.error_detector import ErrorDetector
 from modules.intelligence.analytics import Analytics
 from modules.visualization.dashboard import Dashboard
+from modules.utils.thermal_adapter import ThermalAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,11 @@ class TouchlessMediaControl:
         self._executor.on_action(self._on_action_executed)
 
         logger.info("TouchlessMediaControl initialized (mode=%s)", mode)
+        # Intelligence & Performance
+	self._thermal_adapter = ThermalAdapter(config) # New Addition
+	self._perf = PerformanceMonitor(
+        window_size=config.get("performance.metrics_window", 100)
+    )
 
     def _on_action_executed(self, action_name: str):
         """Callback when a media action is executed."""
@@ -213,6 +219,16 @@ class TouchlessMediaControl:
         window_name = self._config.get("visualization.window_name", "Touchless Media Control")
 
         while self._running:
+# STEP B: Thermal Feedback Check (Every 100 frames)
+            if self._frame_count % 100 == 0:
+            	temp = self._thermal_adapter.get_jetson_temp()
+            	target_fps = self._thermal_adapter.get_target_fps(temp)
+            
+            	# Update the camera capture rate dynamically
+            	self._camera.set_fps(target_fps)
+            
+            	if temp >= self._config.get("performance.thermal_throttle_temp", 70):
+                	logger.warning(f"Thermal Management Active: {temp}°C. Throttling to {target_fps} FPS.")
             with self._perf.measure("total"):
                 frame = self._process_frame_pipeline()
 
