@@ -15,15 +15,15 @@ logger = logging.getLogger(__name__)
 
 GESTURE_KEYS = {
     ord("1"): "thumbs_up",
-    ord("2"): "thumbs_down",
-    ord("3"): "peace_sign",
-    ord("4"): "ok_sign",
-    ord("5"): "fist",
-    ord("6"): "open_palm",
+    ord("2"): "peace_sign",
+    ord("3"): "ok_sign",
+    ord("4"): "fist",
+    ord("5"): "open_palm",
+    ord("6"): "thumbs_down",
     ord("7"): "finger_point",
     ord("8"): "i_love_you",
-    ord("9"): "swipe_left",
-    ord("0"): "swipe_right",
+    ord("9"): "swipe_right",
+    ord("0"): "swipe_left",
 }
 
 
