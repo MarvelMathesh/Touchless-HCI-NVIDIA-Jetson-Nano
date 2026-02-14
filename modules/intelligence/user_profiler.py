@@ -1,6 +1,11 @@
 """
 Gesture Adaptation Engine - learns and adapts to each user's gesture style.
 30-second calibration creates personalized gesture profiles.
+
+v2 improvements:
+    - Type-safe offsets using GestureType enum keys
+    - Gesture samples included in serialization
+    - Proper offset application compatible with classifier
 """
 
 import os
@@ -9,6 +14,8 @@ import time
 import logging
 import numpy as np
 from collections import defaultdict
+
+from core.types import GestureType
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +28,7 @@ class UserProfile:
         self.created_at = time.time()
         self.last_updated = time.time()
         self.gesture_samples = defaultdict(list)  # gesture_name -> list of feature vectors
-        self.confidence_offsets = {}  # gesture_name -> threshold adjustment
+        self.confidence_offsets = {}  # gesture_name (str) -> threshold adjustment
         self.gesture_counts = defaultdict(int)
         self.total_gestures = 0
 
@@ -41,6 +48,15 @@ class UserProfile:
             self.gesture_samples[gesture_name] = self.gesture_samples[gesture_name][-100:]
 
     def to_dict(self) -> dict:
+        """Serialize profile, including gesture samples for persistence."""
+        # Serialize samples (exclude numpy arrays, keep serializable data)
+        serializable_samples = {}
+        for gesture_name, samples in self.gesture_samples.items():
+            serializable_samples[gesture_name] = [
+                {"confidence": s["confidence"], "timestamp": s["timestamp"]}
+                for s in samples
+            ]
+
         return {
             "user_id": self.user_id,
             "created_at": self.created_at,
@@ -48,6 +64,7 @@ class UserProfile:
             "confidence_offsets": self.confidence_offsets,
             "gesture_counts": dict(self.gesture_counts),
             "total_gestures": self.total_gestures,
+            "gesture_samples": serializable_samples,
         }
 
     @classmethod
@@ -58,6 +75,17 @@ class UserProfile:
         profile.confidence_offsets = data.get("confidence_offsets", {})
         profile.gesture_counts = defaultdict(int, data.get("gesture_counts", {}))
         profile.total_gestures = data.get("total_gestures", 0)
+
+        # Restore samples if available
+        saved_samples = data.get("gesture_samples", {})
+        for gesture_name, samples in saved_samples.items():
+            profile.gesture_samples[gesture_name] = [
+                {"features": {"confidence": s.get("confidence", 0)},
+                 "confidence": s.get("confidence", 0),
+                 "timestamp": s.get("timestamp", 0)}
+                for s in samples
+            ]
+
         return profile
 
 
@@ -126,24 +154,29 @@ class UserProfiler:
 
         # Compute per-gesture confidence offsets
         for gesture_name, samples in self._current_profile.gesture_samples.items():
-            if len(samples) >= 3:
-                confidences = [s["confidence"] for s in samples]
-                mean_conf = np.mean(confidences)
-                std_conf = np.std(confidences)
+            if gesture_name == "none" or len(samples) < 3:
+                continue
+            confidences = [s["confidence"] for s in samples]
+            mean_conf = np.mean(confidences)
 
-                # If user consistently gets lower confidence, lower the threshold
-                if mean_conf < 0.85:
-                    offset = -(0.85 - mean_conf) * self._learning_rate
-                    self._current_profile.confidence_offsets[gesture_name] = round(offset, 3)
-                    logger.info(
-                        "Adapted '%s': mean_conf=%.2f, offset=%.3f",
-                        gesture_name, mean_conf, offset,
-                    )
+            # If user consistently gets lower confidence, provide a boost offset
+            if mean_conf < 0.85:
+                offset = (0.85 - mean_conf) * self._learning_rate
+                # Store as string key — apply_adaptation() in classifier handles conversion
+                self._current_profile.confidence_offsets[gesture_name] = round(offset, 3)
+                logger.info(
+                    "Adapted '%s': mean_conf=%.2f, offset=+%.3f",
+                    gesture_name, mean_conf, offset,
+                )
 
         self.save_profile()
 
     def get_adaptation_offsets(self) -> dict:
-        """Get current confidence offsets for the gesture classifier."""
+        """Get current confidence offsets for the gesture classifier.
+
+        Returns offsets as string-keyed dict. The GestureClassifier.apply_adaptation()
+        method handles conversion to GestureType keys internally.
+        """
         return self._current_profile.confidence_offsets.copy()
 
     @property

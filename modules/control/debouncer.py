@@ -1,6 +1,11 @@
 """
 Action debouncing to prevent rapid repeated triggers.
 Supports holdable gestures (volume) with controlled repeat rates.
+
+v2 improvements:
+    - Hold gesture lifecycle properly tracked from pipeline
+    - Hold actions use accelerating repeat rate
+    - Configurable holdable action set
 """
 
 import time
@@ -19,7 +24,7 @@ class Debouncer:
 
         # Track per-action timing
         self._last_action_times = {}
-        self._hold_states = {}
+        self._hold_states = {}  # action_name -> hold_start_time
 
         # Holdable actions (volume up/down can repeat while held)
         self._holdable_actions = {"volume_up", "volume_down"}
@@ -39,8 +44,18 @@ class Debouncer:
 
         if action_name in self._holdable_actions:
             # Holdable actions use a faster repeat rate
-            if elapsed < self._hold_repeat_ms:
-                return False
+            # Accelerate repeat rate the longer the gesture is held
+            if self.is_held(action_name):
+                hold_duration = (time.time() - self._hold_states[action_name]) * 1000
+                # After 2 seconds of holding, speed up repeat by 2x
+                repeat_rate = self._hold_repeat_ms
+                if hold_duration > 2000:
+                    repeat_rate = max(100, self._hold_repeat_ms // 2)
+                if elapsed < repeat_rate:
+                    return False
+            else:
+                if elapsed < self._hold_repeat_ms:
+                    return False
         else:
             # Check if this is a repeat of the same action
             last_any = max(self._last_action_times.values()) if self._last_action_times else 0
@@ -64,16 +79,31 @@ class Debouncer:
         return max(self._last_action_times, key=self._last_action_times.get)
 
     def start_hold(self, action_name: str):
-        """Mark an action as being held (for continuous gestures)."""
-        self._hold_states[action_name] = time.time()
+        """Mark an action as being held (for continuous gestures like volume)."""
+        if action_name not in self._hold_states:
+            self._hold_states[action_name] = time.time()
+            logger.debug("Hold started: %s", action_name)
 
     def end_hold(self, action_name: str):
         """Mark end of a held action."""
-        self._hold_states.pop(action_name, None)
+        if action_name in self._hold_states:
+            duration = time.time() - self._hold_states[action_name]
+            del self._hold_states[action_name]
+            logger.debug("Hold ended: %s (%.1fs)", action_name, duration)
+
+    def end_all_holds(self):
+        """End all held actions (e.g., when hand is lost)."""
+        if self._hold_states:
+            logger.debug("Ending all holds: %s", list(self._hold_states.keys()))
+            self._hold_states.clear()
 
     def is_held(self, action_name: str) -> bool:
         """Check if an action is currently being held."""
         return action_name in self._hold_states
+
+    def is_holdable(self, action_name: str) -> bool:
+        """Check if an action supports hold-repeat."""
+        return action_name in self._holdable_actions
 
     def reset(self):
         """Clear all debouncing state."""

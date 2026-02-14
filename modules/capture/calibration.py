@@ -1,5 +1,10 @@
 """
 Camera calibration utilities for auto-exposure and white balance.
+
+v2 improvements:
+    - Returns frame_processor-compatible enhancement flag
+    - Enhanced lighting assessment with zone analysis
+    - Optional auto-set FrameProcessor enhancement on calibration
 """
 
 import time
@@ -17,12 +22,13 @@ class Calibrator:
         self._target_brightness = target_brightness
         self._tolerance = tolerance
 
-    def auto_calibrate(self, camera, num_frames=30) -> dict:
+    def auto_calibrate(self, camera, num_frames=30, frame_processor=None) -> dict:
         """Run auto-calibration sequence and return optimal settings.
 
         Args:
             camera: CameraManager instance
             num_frames: Number of frames to analyze
+            frame_processor: Optional FrameProcessor to auto-configure enhancement
 
         Returns:
             dict with calibration results
@@ -49,20 +55,28 @@ class Calibrator:
         avg_contrast = np.mean(contrast_values)
         brightness_stability = np.std(brightness_values)
 
+        needs_enhancement = avg_brightness < 60 or avg_brightness > 200
+
         result = {
             "success": True,
             "avg_brightness": round(float(avg_brightness), 1),
             "avg_contrast": round(float(avg_contrast), 1),
             "brightness_stability": round(float(brightness_stability), 2),
             "lighting_quality": self._assess_lighting(avg_brightness, avg_contrast),
-            "needs_enhancement": avg_brightness < 60 or avg_brightness > 200,
+            "needs_enhancement": needs_enhancement,
         }
 
+        # Auto-configure FrameProcessor if provided
+        if frame_processor is not None and needs_enhancement:
+            frame_processor.set_enhancement(True)
+            logger.info("Auto-enabled frame enhancement based on calibration")
+
         logger.info(
-            "Calibration complete: brightness=%.1f, contrast=%.1f, quality=%s",
+            "Calibration complete: brightness=%.1f, contrast=%.1f, quality=%s, enhance=%s",
             result["avg_brightness"],
             result["avg_contrast"],
             result["lighting_quality"],
+            needs_enhancement,
         )
         return result
 

@@ -3,6 +3,13 @@
 Touchless Media Control - Edge AI on Jetson Nano
 Main application entry point and pipeline orchestrator.
 
+v2.0 Architecture:
+    - core.Pipeline handles detect→recognize→act cycle
+    - core.EventBus for decoupled module communication
+    - ThermalManager for adaptive FPS control
+    - Proper calibration → enhancement wiring
+    - No God Object — TouchlessMediaControl delegates to Pipeline
+
 Usage:
     python main.py                    # Default control mode
     python main.py --mode demo        # Demo mode (no VLC control)
@@ -34,7 +41,7 @@ from modules.capture.calibration import Calibrator
 from modules.detection.hand_detector import HandDetector
 from modules.detection.landmark_extractor import LandmarkExtractor
 from modules.detection.tracking import HandTracker
-from modules.recognition.gesture_classifier import GestureClassifier, GestureType
+from modules.recognition.gesture_classifier import GestureClassifier
 from modules.recognition.temporal_filter import TemporalFilter
 from modules.recognition.confidence_scorer import ConfidenceScorer
 from modules.control.action_executor import ActionExecutor
@@ -43,18 +50,29 @@ from modules.control.feedback_manager import FeedbackManager
 from modules.intelligence.user_profiler import UserProfiler
 from modules.intelligence.error_detector import ErrorDetector
 from modules.intelligence.analytics import Analytics
+from modules.intelligence.thermal_manager import ThermalManager
 from modules.visualization.dashboard import Dashboard
+
+from core.events import EventBus, Events
+from core.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
 
 class TouchlessMediaControl:
-    """Main application orchestrating the gesture-controlled media system."""
+    """Main application orchestrating the gesture-controlled media system.
+
+    Delegates pipeline logic to core.Pipeline and uses EventBus for
+    decoupled module communication.
+    """
 
     def __init__(self, config: Config, mode: str = "control"):
         self._config = config
         self._mode = mode
         self._running = False
+
+        # --- Event Bus ---
+        self._bus = EventBus()
 
         # --- Initialize all modules ---
 
@@ -86,6 +104,7 @@ class TouchlessMediaControl:
         self._profiler = UserProfiler(config.adaptation)
         self._error_detector = ErrorDetector()
         self._analytics = Analytics()
+        self._thermal = ThermalManager(config.performance)
 
         # Visualization
         self._dashboard = Dashboard(config.visualization)
@@ -96,22 +115,62 @@ class TouchlessMediaControl:
         )
         self._gesture_logger = GestureLogger()
 
-        # State
-        self._current_gesture = None
-        self._current_confidence = 0.0
-        self._last_action = None
-        self._frame_count = 0
+        # --- Build Pipeline ---
+        self._pipeline = Pipeline(
+            camera=self._camera,
+            frame_processor=self._frame_processor,
+            detector=self._detector,
+            extractor=self._extractor,
+            tracker=self._tracker,
+            classifier=self._classifier,
+            temporal_filter=self._temporal_filter,
+            confidence_scorer=self._confidence_scorer,
+            debouncer=self._debouncer,
+            executor=self._executor,
+            profiler=self._profiler,
+            error_detector=self._error_detector,
+            analytics=self._analytics,
+            performance_monitor=self._perf,
+            thermal_manager=self._thermal,
+            event_bus=self._bus,
+            config={
+                "enable_threading": config.get("performance.enable_threading", True),
+                "frame_skip_threshold": config.get("performance.frame_skip_threshold", 50),
+                "mode": mode,
+            },
+        )
 
-        # Register action feedback callback
-        self._executor.on_action(self._on_action_executed)
+        # --- Wire Event Callbacks ---
+        self._bus.subscribe(Events.ACTION_EXECUTED, self._on_action_executed)
+        self._bus.subscribe(Events.GESTURE_STABLE, self._on_gesture_stable)
+        self._bus.subscribe(Events.THERMAL_WARNING, self._on_thermal_warning)
+
+        # Legacy callback for feedback
+        self._executor.on_action(lambda action: self._feedback.trigger(action))
 
         logger.info("TouchlessMediaControl initialized (mode=%s)", mode)
 
-    def _on_action_executed(self, action_name: str):
-        """Callback when a media action is executed."""
-        self._feedback.trigger(action_name)
-        self._analytics.record_action(action_name)
-        self._gesture_logger.log_action(action_name)
+    def _on_action_executed(self, **kwargs):
+        """Handle action executed event."""
+        action = kwargs.get("action", "")
+        gesture = kwargs.get("gesture", "")
+        self._analytics.record_action(action)
+        self._gesture_logger.log_action(action)
+        self._gesture_logger.log_gesture(
+            gesture, self._pipeline.current_confidence, action,
+            self._perf.total_latency_ms,
+        )
+
+    def _on_gesture_stable(self, **kwargs):
+        """Handle stable gesture detection event."""
+        # Could trigger visual feedback, sound, etc.
+        pass
+
+    def _on_thermal_warning(self, **kwargs):
+        """Handle thermal warning event."""
+        state = kwargs.get("state", "")
+        temp = kwargs.get("temperature", 0)
+        logger.warning("Thermal warning: %s at %.1f°C", state, temp)
 
     def start(self, calibrate: bool = False):
         """Start the main application loop."""
@@ -138,6 +197,15 @@ class TouchlessMediaControl:
         cal_result = self._calibrator.auto_calibrate(self._camera)
         if cal_result.get("needs_enhancement"):
             logger.info("Low light detected - enabling image enhancement")
+            self._frame_processor.set_enhancement(True)
+
+        # Start thermal monitoring
+        self._thermal.start_monitoring()
+        self._thermal.on_state_change(
+            lambda state, temp: self._bus.emit(
+                Events.THERMAL_WARNING, state=state.value, temperature=temp
+            )
+        )
 
         # User calibration
         if calibrate:
@@ -168,36 +236,34 @@ class TouchlessMediaControl:
         self._profiler.start_calibration("default")
         calibration_duration = self._config.get("adaptation.calibration_duration_sec", 30)
         calibration_start = time.time()
+        window_name = self._config.get("visualization.window_name", "Touchless Media Control")
+
         logger.info("=== USER CALIBRATION ===")
         logger.info("Perform various gestures naturally for %d seconds", calibration_duration)
 
         while self._profiler.is_calibrating:
-            # Safety timeout: force-end calibration if profiler hasn't ended it
+            # Safety timeout
             if time.time() - calibration_start > calibration_duration + 2:
                 logger.warning("Calibration safety timeout reached, finishing")
                 break
 
-            frame = self._process_frame_pipeline()
-            if frame is not None:
-                # Always update profiler during calibration (even without stable gesture)
+            with self._perf.measure("total"):
+                result = self._pipeline.tick()
+
+            if result.frame is not None:
+                # Update profiler during calibration
                 self._profiler.update(
-                    self._current_gesture or "none",
-                    self._current_confidence,
+                    result.gesture_name or "none",
+                    result.gesture_confidence,
                 )
 
-                state = {
-                    "calibrating": True,
-                    "calibration_progress": self._profiler.calibration_progress,
-                    "fps": self._perf.fps,
-                    "latency_ms": self._perf.total_latency_ms,
-                    "hand_detected": self._current_gesture is not None,
-                    "gesture_name": self._current_gesture,
-                    "gesture_confidence": self._current_confidence,
-                    "mode": "calibration",
-                    "hand_count": self._tracker.hand_count,
-                }
-                frame = self._dashboard.render(frame, state)
-                cv2.imshow(self._config.get("visualization.window_name", "Touchless Media Control"), frame)
+                state = self._pipeline.build_state()
+                state["calibrating"] = True
+                state["calibration_progress"] = self._profiler.calibration_progress
+                state["mode"] = "calibration"
+
+                frame = self._dashboard.render(result.frame, state)
+                cv2.imshow(window_name, frame)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
@@ -209,36 +275,32 @@ class TouchlessMediaControl:
             logger.info("Calibration offsets applied: %s", offsets)
 
     def _run_main_loop(self):
-        """Main control/demo loop."""
+        """Main control/demo loop using the Pipeline."""
         window_name = self._config.get("visualization.window_name", "Touchless Media Control")
 
         while self._running:
             with self._perf.measure("total"):
-                frame = self._process_frame_pipeline()
+                result = self._pipeline.tick()
 
-                if frame is None:
+                if result.frame is None:
                     continue
-
-                # Execute action (control mode only)
-                if self._mode == "control" and self._current_gesture:
-                    self._try_execute_action()
 
                 # Render dashboard
                 if self._config.get("visualization.enabled", True):
-                    state = self._build_state()
-                    frame = self._dashboard.render(frame, state)
+                    state = self._pipeline.build_state()
+                    frame = self._dashboard.render(result.frame, state)
                     frame = self._feedback.render(frame)
                     cv2.imshow(window_name, frame)
-
-                self._perf.tick()
 
             # Handle keyboard input
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 self._running = False
             elif key == ord("m"):
-                self._mode = "demo" if self._mode == "control" else "control"
-                logger.info("Mode switched to: %s", self._mode)
+                new_mode = "demo" if self._mode == "control" else "control"
+                self._mode = new_mode
+                self._pipeline.set_mode(new_mode)
+                logger.info("Mode switched to: %s", new_mode)
             elif key == ord("p"):
                 self._perf.print_report()
                 self._analytics.print_summary()
@@ -247,151 +309,19 @@ class TouchlessMediaControl:
 
         self._shutdown()
 
-    def _process_frame_pipeline(self) -> np.ndarray:
-        """Run the full detection+recognition pipeline on one frame.
-
-        Returns:
-            Processed BGR frame, or None if no frame available
-        """
-        # 1. Capture
-        with self._perf.measure("capture"):
-            if self._config.get("performance.enable_threading", True):
-                frame_id, frame = self._camera.read()
-            else:
-                frame_id, frame = self._camera.read_sync()
-
-        if frame is None:
-            return None
-
-        self._frame_count += 1
-
-        # 2. Preprocess
-        with self._perf.measure("preprocess"):
-            rgb_frame = self._frame_processor.preprocess(frame)
-
-        # 3. Hand detection
-        with self._perf.measure("detection"):
-            results = self._detector.detect(rgb_frame)
-
-        # 4. Landmark extraction & tracking
-        tracked_hands = self._tracker.update(results, self._extractor)
-        primary_hand = self._tracker.get_primary_hand()
-        hand_detected = primary_hand is not None
-
-        self._analytics.record_frame(hand_detected)
-
-        # 5. Gesture classification
-        with self._perf.measure("classification"):
-            if primary_hand is not None:
-                raw_result = self._classifier.classify(primary_hand.landmarks)
-
-                # Temporal filtering
-                filtered = self._temporal_filter.update(raw_result)
-
-                if filtered["gesture"] and filtered["stable"]:
-                    self._current_gesture = filtered["gesture"].value
-                    self._current_confidence = filtered["confidence"]
-
-                    # Record for analytics and adaptation
-                    self._analytics.record_gesture(self._current_gesture, self._current_confidence)
-                    self._confidence_scorer.record(self._current_gesture, self._current_confidence)
-                    self._error_detector.record(self._current_gesture, self._current_confidence)
-                    self._profiler.update(self._current_gesture, self._current_confidence)
-                else:
-                    self._current_gesture = None
-                    self._current_confidence = filtered.get("confidence", 0)
-                    self._error_detector.record("none", 0)
-            else:
-                self._current_gesture = None
-                self._current_confidence = 0.0
-                self._temporal_filter.reset()
-                self._classifier.reset_trajectory()
-                self._error_detector.record("none", 0)
-
-        # Draw landmarks on frame
-        self._detector.draw_landmarks(frame, results)
-
-        # Check for anomalies periodically
-        if self._frame_count % 30 == 0:
-            anomalies = self._error_detector.check_anomalies()
-            if anomalies:
-                logger.warning("Anomalies detected: %s", anomalies)
-
-        return frame
-
-    def _try_execute_action(self):
-        """Attempt to execute the action for the current gesture."""
-        if not self._current_gesture:
-            return
-
-        action = self._get_action_for_gesture(self._current_gesture)
-        if action is None:
-            return
-
-        # Check confidence threshold
-        if not self._confidence_scorer.should_execute(self._current_gesture, self._current_confidence):
-            return
-
-        # Check debouncing
-        if not self._debouncer.can_execute(action):
-            return
-
-        # Execute
-        with self._perf.measure("action"):
-            success = self._executor.execute(action)
-
-        if success:
-            self._debouncer.record(action)
-            self._last_action = action
-            self._gesture_logger.log_gesture(
-                self._current_gesture, self._current_confidence, action,
-                self._perf.total_latency_ms,
-            )
-
-    @staticmethod
-    def _get_action_for_gesture(gesture_name: str) -> str:
-        """Map gesture name to media action."""
-        from modules.recognition.gesture_classifier import GESTURE_ACTION_MAP, GestureType
-        try:
-            gesture_type = GestureType(gesture_name)
-            return GESTURE_ACTION_MAP.get(gesture_type)
-        except ValueError:
-            return None
-
-    def _build_state(self) -> dict:
-        """Build state dict for dashboard rendering."""
-        primary = self._tracker.get_primary_hand()
-        bbox = None
-        if primary is not None:
-            bbox = self._extractor.get_bounding_box(primary.landmarks)
-
-        return {
-            "fps": self._perf.fps,
-            "latency_ms": self._perf.total_latency_ms,
-            "gesture_name": self._current_gesture,
-            "gesture_confidence": self._current_confidence,
-            "hand_detected": primary is not None,
-            "hand_bbox": bbox,
-            "hand_count": self._tracker.hand_count,
-            "mode": self._mode,
-            "calibrating": self._profiler.is_calibrating,
-            "calibration_progress": self._profiler.calibration_progress,
-        }
-
     def _run_benchmark_mode(self):
-        """Run performance benchmark (no VLC, measure pipeline speed)."""
+        """Run performance benchmark."""
         logger.info("=== BENCHMARK MODE ===")
         logger.info("Running 300-frame benchmark...")
         benchmark_frames = 300
 
         for i in range(benchmark_frames):
             with self._perf.measure("total"):
-                frame = self._process_frame_pipeline()
-                if frame is not None:
-                    self._perf.tick()
+                result = self._pipeline.tick()
 
             if i % 50 == 0:
-                logger.info("Benchmark progress: %d/%d (FPS: %.1f)", i, benchmark_frames, self._perf.fps)
+                logger.info("Benchmark progress: %d/%d (FPS: %.1f)",
+                            i, benchmark_frames, self._perf.fps)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -416,6 +346,7 @@ class TouchlessMediaControl:
         """Clean shutdown of all modules."""
         logger.info("Shutting down...")
         self._running = False
+        self._thermal.stop_monitoring()
         self._camera.stop()
         self._detector.close()
         cv2.destroyAllWindows()

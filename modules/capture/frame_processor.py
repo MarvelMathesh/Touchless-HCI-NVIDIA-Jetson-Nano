@@ -1,6 +1,12 @@
 """
 Frame preprocessing with optional GPU acceleration.
-Handles color conversion, ROI extraction, and normalization.
+Handles color conversion, ROI extraction, enhancement, and normalization.
+
+v2 improvements:
+    - Actual CUDA paths using cv2.cuda_GpuMat for color conversion
+    - Auto-enhancement driven by calibration results
+    - Cached GpuMat to reduce allocation overhead
+    - Lighting detection wired into preprocessing pipeline
 """
 
 import logging
@@ -20,8 +26,25 @@ class FrameProcessor:
         # CLAHE for adaptive contrast enhancement
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
+        # Enhancement state (set via calibration)
+        self._enhance_enabled = False
+        self._lighting_condition = "good"
+        self._lighting_check_interval = 60  # Check every N frames
+        self._frame_counter = 0
+
+        # GPU mat cache to reduce allocation
+        self._gpu_src = None
+        self._gpu_dst = None
+
         if self._use_gpu:
-            logger.info("GPU preprocessing enabled (CUDA)")
+            try:
+                # Pre-allocate GPU mats for 640x480 BGR
+                self._gpu_src = cv2.cuda_GpuMat()
+                self._gpu_dst = cv2.cuda_GpuMat()
+                logger.info("GPU preprocessing enabled (CUDA with GpuMat cache)")
+            except Exception as e:
+                logger.warning("GPU mat allocation failed, falling back to CPU: %s", e)
+                self._use_gpu = False
         else:
             logger.info("CPU preprocessing mode")
 
@@ -30,13 +53,57 @@ class FrameProcessor:
         """Check if CUDA is available in OpenCV."""
         try:
             count = cv2.cuda.getCudaEnabledDeviceCount()
-            return count > 0
-        except Exception:
+            if count > 0:
+                # Verify we can actually use cuda_GpuMat
+                test = cv2.cuda_GpuMat()
+                return True
+            return False
+        except (AttributeError, Exception):
             return False
 
+    def set_enhancement(self, enabled: bool):
+        """Enable/disable auto-enhancement (called by calibration)."""
+        self._enhance_enabled = enabled
+        logger.info("Frame enhancement %s", "enabled" if enabled else "disabled")
+
     def preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """Standard preprocessing: BGR -> RGB for MediaPipe."""
+        """Main preprocessing: optional enhancement + BGR -> RGB.
+
+        Uses GPU for color conversion when available.
+        Auto-enhances if calibration detected poor lighting.
+        """
+        self._frame_counter += 1
+
+        # Periodic lighting check
+        if self._frame_counter % self._lighting_check_interval == 0:
+            self._lighting_condition = self.detect_lighting(frame)
+            # Auto-enable enhancement in poor lighting
+            if self._lighting_condition in ("low", "bright") and not self._enhance_enabled:
+                self._enhance_enabled = True
+                logger.info("Auto-enabled enhancement (lighting: %s)", self._lighting_condition)
+            elif self._lighting_condition == "good" and self._enhance_enabled:
+                self._enhance_enabled = False
+                logger.info("Auto-disabled enhancement (lighting improved)")
+
+        # Apply CLAHE enhancement if needed
+        if self._enhance_enabled:
+            frame = self.enhance(frame)
+
+        # BGR -> RGB conversion
+        if self._use_gpu:
+            return self._preprocess_gpu(frame)
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    def _preprocess_gpu(self, frame: np.ndarray) -> np.ndarray:
+        """GPU-accelerated BGR -> RGB using CUDA."""
+        try:
+            self._gpu_src.upload(frame)
+            cv2.cuda.cvtColor(self._gpu_src, cv2.COLOR_BGR2RGB, self._gpu_dst)
+            return self._gpu_dst.download()
+        except Exception as e:
+            # Fallback to CPU on any GPU error
+            logger.debug("GPU cvtColor failed, falling back to CPU: %s", e)
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def enhance(self, frame: np.ndarray) -> np.ndarray:
         """Enhanced preprocessing for difficult lighting conditions."""
@@ -107,3 +174,15 @@ class FrameProcessor:
             result[:, :, 2] *= avg_gray / avg_r
 
         return np.clip(result, 0, 255).astype(np.uint8)
+
+    @property
+    def is_gpu_enabled(self) -> bool:
+        return self._use_gpu
+
+    @property
+    def lighting_condition(self) -> str:
+        return self._lighting_condition
+
+    @property
+    def is_enhancing(self) -> bool:
+        return self._enhance_enabled

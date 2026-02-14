@@ -1,6 +1,11 @@
 """
 Anomaly detection for gesture recognition errors.
-Detects unusual patterns that indicate misclassification or system issues.
+Detects unusual patterns and provides corrective action suggestions.
+
+v2 improvements:
+    - Corrective action suggestions (not just logging)
+    - Flap threshold auto-tuning
+    - Recent error window with severity levels
 """
 
 import time
@@ -34,7 +39,7 @@ class ErrorDetector:
         """Check for anomalous patterns.
 
         Returns:
-            List of anomaly descriptions (empty if none detected)
+            List of anomaly dicts with 'type', 'message', 'severity', 'action'
         """
         anomalies = []
 
@@ -46,22 +51,56 @@ class ErrorDetector:
         # 1. Gesture flapping (rapid switching)
         flap_count = self._detect_flapping(recent)
         if flap_count > self._flap_threshold:
-            anomalies.append(f"gesture_flapping: {flap_count} changes in 2s")
+            anomalies.append({
+                "type": "gesture_flapping",
+                "message": f"{flap_count} changes in 2s",
+                "severity": "warning",
+                "action": "increase_dwell_time",
+                "suggestion": "Consider increasing dwell_time_ms or temporal window_size",
+            })
 
         # 2. Low confidence streak
         low_conf_streak = self._detect_low_confidence(recent)
         if low_conf_streak > 5:
-            anomalies.append(f"low_confidence_streak: {low_conf_streak} frames")
+            anomalies.append({
+                "type": "low_confidence_streak",
+                "message": f"{low_conf_streak} consecutive low-confidence frames",
+                "severity": "warning" if low_conf_streak < 10 else "error",
+                "action": "check_lighting",
+                "suggestion": "Poor hand visibility - check lighting or camera angle",
+            })
 
         # 3. No detection streak
         no_detect = self._detect_no_hands(recent)
         if no_detect > 10:
-            anomalies.append(f"no_detection: {no_detect} frames")
+            anomalies.append({
+                "type": "no_detection",
+                "message": f"{no_detect} frames without hand detection",
+                "severity": "info" if no_detect < 20 else "warning",
+                "action": "wait",
+                "suggestion": "No hands in frame - user may have stepped away",
+            })
+
+        # 4. Dominant single gesture (possible stuck detection)
+        dominant = self._detect_dominant_gesture(recent)
+        if dominant:
+            anomalies.append({
+                "type": "stuck_gesture",
+                "message": f"'{dominant}' detected for {self._window_size}+ frames",
+                "severity": "warning",
+                "action": "reset_temporal_filter",
+                "suggestion": "Same gesture detected for too long - may be misclassification",
+            })
 
         if anomalies:
             for a in anomalies:
-                logger.warning("Anomaly detected: %s", a)
-                self._error_events.append({"anomaly": a, "time": time.time()})
+                logger.warning("Anomaly [%s]: %s - %s",
+                               a["severity"], a["type"], a["message"])
+                self._error_events.append({
+                    "anomaly": a["type"],
+                    "severity": a["severity"],
+                    "time": time.time(),
+                })
 
         return anomalies
 
@@ -97,6 +136,22 @@ class ErrorDetector:
             else:
                 break
         return streak
+
+    def _detect_dominant_gesture(self, history: list) -> str:
+        """Detect if one gesture dominates the entire window (stuck)."""
+        if len(history) < self._window_size:
+            return None
+
+        gestures = [h["gesture"] for h in history if h["gesture"] != "none"]
+        if not gestures:
+            return None
+
+        counter = Counter(gestures)
+        most_common, count = counter.most_common(1)[0]
+        # If >90% of window is same gesture, it may be stuck
+        if count / len(history) > 0.9:
+            return most_common
+        return None
 
     @property
     def error_count(self) -> int:

@@ -1,73 +1,49 @@
 """
 Hybrid gesture classifier combining rule-based geometric analysis
 for static gestures and trajectory matching for dynamic gestures.
+
+v2 improvements:
+    - Config-driven classification from gestures.yaml rules
+    - Angle-based finger curl features (not binary tip.y < pip.y)
+    - Wider confidence score ranges for meaningful differentiation
+    - Ambiguity detection (top-2 score gap check)
+    - GestureType/GestureResult from core.types (no circular deps)
+    - Single LandmarkExtractor passed via set_extractor()
 """
 
 import time
 import logging
-from enum import Enum
 from collections import deque
 import numpy as np
 
+from core.types import GestureType, GestureResult, GESTURE_ACTION_MAP
 from modules.detection.landmark_extractor import (
     LandmarkExtractor, THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP,
-    WRIST, INDEX_MCP, PINKY_MCP,
+    FINGER_TIPS, WRIST, INDEX_MCP, PINKY_MCP, THUMB_CMC,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class GestureType(Enum):
-    NONE = "none"
-    THUMBS_UP = "thumbs_up"
-    THUMBS_DOWN = "thumbs_down"
-    PEACE_SIGN = "peace_sign"
-    OK_SIGN = "ok_sign"
-    FIST = "fist"
-    OPEN_PALM = "open_palm"
-    FINGER_POINT = "finger_point"
-    I_LOVE_YOU = "i_love_you"
-    SWIPE_LEFT = "swipe_left"
-    SWIPE_RIGHT = "swipe_right"
-
-
-# Maps gesture types to media actions
-GESTURE_ACTION_MAP = {
-    GestureType.THUMBS_UP: "play_pause",
-    GestureType.THUMBS_DOWN: "smart_pause",
-    GestureType.PEACE_SIGN: "volume_up",
-    GestureType.OK_SIGN: "volume_down",
-    GestureType.FIST: "mute",
-    GestureType.OPEN_PALM: "fullscreen",
-    GestureType.FINGER_POINT: "seek_position",
-    GestureType.SWIPE_LEFT: "seek_backward",
-    GestureType.SWIPE_RIGHT: "seek_forward",
-}
-
-
-class GestureResult:
-    """Container for gesture classification result."""
-
-    __slots__ = ("gesture", "confidence", "action", "is_dynamic", "timestamp")
-
-    def __init__(self, gesture: GestureType, confidence: float, is_dynamic: bool = False):
-        self.gesture = gesture
-        self.confidence = confidence
-        self.action = GESTURE_ACTION_MAP.get(gesture)
-        self.is_dynamic = is_dynamic
-        self.timestamp = time.time()
-
-    def __repr__(self):
-        return f"GestureResult({self.gesture.value}, conf={self.confidence:.2f})"
-
-
 class GestureClassifier:
-    """Classifies hand gestures using landmark geometry and trajectory analysis."""
+    """Classifies hand gestures using landmark geometry and trajectory analysis.
 
-    def __init__(self, config: dict):
+    v2: Uses curl angles as continuous features for more robust scoring.
+    Classification rules can be loaded from gestures.yaml for extensibility.
+    """
+
+    def __init__(self, config: dict, gesture_rules: dict = None):
+        """Initialize the classifier.
+
+        Args:
+            config: Recognition config section from config.yaml
+            gesture_rules: Optional static_gestures dict from gestures.yaml
+                           If provided, rules are loaded from YAML.
+        """
         self._extractor = LandmarkExtractor()
         self._thresholds = config.get("confidence_thresholds", {})
         self._default_threshold = self._thresholds.get("default", 0.80)
+        self._min_confidence_gap = 0.1  # Minimum gap between top-2 gestures
 
         # Dynamic gesture tracking
         dyn_config = config.get("dynamic", {})
@@ -76,8 +52,15 @@ class GestureClassifier:
         self._swipe_min_dist = dyn_config.get("swipe_min_distance", 80)
         self._trajectory = deque(maxlen=self._trajectory_window)
 
-        # User adaptation offsets (updated by intelligence module)
+        # User adaptation offsets {GestureType -> float}
         self._adaptation_offsets = {}
+
+        # Load gesture rules from YAML config
+        self._gesture_rules = gesture_rules or {}
+
+    def set_extractor(self, extractor: LandmarkExtractor):
+        """Use a shared LandmarkExtractor instance instead of creating a new one."""
+        self._extractor = extractor
 
     def set_frame_size(self, width: int, height: int):
         """Set frame dimensions for pixel coordinate calculations."""
@@ -113,11 +96,21 @@ class GestureClassifier:
         return GestureResult(GestureType.NONE, 0.0)
 
     def _classify_static(self, landmarks: np.ndarray) -> GestureResult:
-        """Classify static (pose-based) gestures using geometric rules."""
+        """Classify static (pose-based) gestures using continuous curl features.
+
+        v2: Scores are built from continuous curl values instead of binary
+        finger states. Base scores start lower (0.50-0.65) and are boosted
+        by how well the hand matches the ideal pose, creating meaningful
+        confidence differentiation.
+        """
+        # Extract all features in one pass
         finger_states = self._extractor.get_finger_states(landmarks)
+        finger_curls = self._extractor.get_all_finger_curls(landmarks)
         thumb_dir = self._extractor.get_thumb_direction(landmarks)
         thumb_idx_dist = self._extractor.get_thumb_index_distance(landmarks)
         hand_size = self._extractor.get_hand_size(landmarks)
+        inter_distances = self._extractor.get_inter_finger_distances(landmarks)
+        tip_dists_norm = self._extractor.get_finger_tip_to_palm_distances(landmarks)
 
         # Normalize thumb-index distance by hand size
         norm_thumb_idx = thumb_idx_dist / max(hand_size, 0.001)
@@ -125,117 +118,177 @@ class GestureClassifier:
         scores = {}
 
         # --- THUMBS UP ---
-        if (finger_states["thumb"] and
-                not finger_states["index"] and
-                not finger_states["middle"] and
-                not finger_states["ring"] and
-                not finger_states["pinky"] and
-                thumb_dir == "up"):
-            score = 0.9
-            # Bonus for clear upward direction
-            thumb_tip = landmarks[THUMB_TIP]
-            thumb_mcp = landmarks[1]  # THUMB_CMC
-            verticality = abs(thumb_tip[1] - thumb_mcp[1]) / max(abs(thumb_tip[0] - thumb_mcp[0]) + 0.01, 0.001)
-            score += min(0.1, verticality * 0.02)
-            scores[GestureType.THUMBS_UP] = min(score, 1.0)
+        # Thumb extended (low curl) + 4 fingers curled (high curl) + thumb up
+        # Guard: thumb tip must be far from palm — in a fist the thumb
+        # wraps near the palm (distance < 0.55), while a real thumbs-up
+        # has the thumb sticking clearly outward.
+        if (finger_states["thumb"] and thumb_dir == "up"
+                and tip_dists_norm["thumb"] > 0.55):
+            curled_fingers = ["index", "middle", "ring", "pinky"]
+            curled_score = sum(finger_curls[f] for f in curled_fingers) / 4.0
+            thumb_ext = 1.0 - finger_curls["thumb"]
+
+            if all(not finger_states[f] for f in curled_fingers):
+                # Base score starts lower, curl quality boosts it
+                base = 0.55
+                # How tightly curled are the fingers? (0=not at all, 1=fully)
+                curl_bonus = curled_score * 0.25
+                # How extended is the thumb?
+                thumb_bonus = thumb_ext * 0.12
+                # Verticality bonus
+                thumb_tip = landmarks[THUMB_TIP]
+                thumb_base = landmarks[THUMB_CMC]
+                dy = abs(thumb_tip[1] - thumb_base[1])
+                dx = abs(thumb_tip[0] - thumb_base[0]) + 0.001
+                vert_ratio = dy / (dy + dx)
+                vert_bonus = vert_ratio * 0.08
+
+                scores[GestureType.THUMBS_UP] = min(1.0, base + curl_bonus + thumb_bonus + vert_bonus)
 
         # --- THUMBS DOWN ---
-        if (finger_states["thumb"] and
-                not finger_states["index"] and
-                not finger_states["middle"] and
-                not finger_states["ring"] and
-                not finger_states["pinky"] and
-                thumb_dir == "down"):
-            scores[GestureType.THUMBS_DOWN] = 0.90
+        # Same palm-distance guard as thumbs_up
+        if (finger_states["thumb"] and thumb_dir == "down"
+                and tip_dists_norm["thumb"] > 0.55):
+            curled_fingers = ["index", "middle", "ring", "pinky"]
+            curled_score = sum(finger_curls[f] for f in curled_fingers) / 4.0
+
+            if all(not finger_states[f] for f in curled_fingers):
+                base = 0.55
+                curl_bonus = curled_score * 0.25
+                thumb_ext = (1.0 - finger_curls["thumb"]) * 0.12
+                scores[GestureType.THUMBS_DOWN] = min(1.0, base + curl_bonus + thumb_ext)
 
         # --- PEACE SIGN / VICTORY ---
-        if (not finger_states["thumb"] and
-                finger_states["index"] and
-                finger_states["middle"] and
-                not finger_states["ring"] and
-                not finger_states["pinky"]):
-            score = 0.88
-            # Check V-spread between index and middle
-            idx_mid_dist = self._extractor.get_inter_finger_distances(landmarks).get("index_middle", 0)
-            if idx_mid_dist > 0.1:
-                score += 0.07
-            scores[GestureType.PEACE_SIGN] = min(score, 1.0)
+        if (finger_states["index"] and finger_states["middle"] and
+                not finger_states["ring"] and not finger_states["pinky"]):
+            base = 0.55
+            # How extended are index+middle?
+            ext_score = ((1.0 - finger_curls["index"]) + (1.0 - finger_curls["middle"])) / 2.0
+            ext_bonus = ext_score * 0.15
+            # How curled are ring+pinky?
+            curl_score = (finger_curls["ring"] + finger_curls["pinky"]) / 2.0
+            curl_bonus = curl_score * 0.15
+            # V-spread between index and middle
+            spread = inter_distances.get("index_middle", 0)
+            spread_bonus = min(0.10, spread * 0.5) if spread > 0.06 else 0
+            # Thumb curled gives extra confidence (cleaner V)
+            thumb_bonus = 0.05 if not finger_states["thumb"] else 0
+
+            scores[GestureType.PEACE_SIGN] = min(1.0, base + ext_bonus + curl_bonus + spread_bonus + thumb_bonus)
 
         # --- OK SIGN ---
-        if norm_thumb_idx < 0.15:  # Thumb and index touching
-            # Other fingers should be extended
-            if (finger_states["middle"] and
-                    finger_states["ring"] and
-                    finger_states["pinky"]):
-                score = 0.85
+        if norm_thumb_idx < 0.18:  # Thumb and index touching/close
+            if (finger_states["middle"] and finger_states["ring"] and finger_states["pinky"]):
+                base = 0.50
                 # Tighter circle = higher confidence
-                score += max(0, 0.15 - norm_thumb_idx) * 0.5
-                scores[GestureType.OK_SIGN] = min(score, 1.0)
+                circle_bonus = max(0, 0.18 - norm_thumb_idx) * 1.5
+                # How extended are the other fingers?
+                ext_score = sum(1.0 - finger_curls[f] for f in ["middle", "ring", "pinky"]) / 3.0
+                ext_bonus = ext_score * 0.15
+                scores[GestureType.OK_SIGN] = min(1.0, base + circle_bonus + ext_bonus)
 
         # --- CLOSED FIST ---
-        if (not finger_states["thumb"] and
-                not finger_states["index"] and
-                not finger_states["middle"] and
-                not finger_states["ring"] and
-                not finger_states["pinky"]):
-            score = 0.90
-            # Check compactness - all tips close to palm
+        # Use curl values directly rather than relying only on binary states,
+        # plus thumb-tip proximity to palm as the gate.
+        four_fingers_curled = all(
+            not finger_states[f] for f in ("index", "middle", "ring", "pinky")
+        )
+        # Also accept fist if average curl of 4 fingers is high enough
+        # (catches borderline binary-state edge cases)
+        avg_four_curl = sum(finger_curls[f] for f in ("index", "middle", "ring", "pinky")) / 4.0
+        four_curled_soft = four_fingers_curled or avg_four_curl > 0.45
+        thumb_near_palm = tip_dists_norm["thumb"] < 0.55
+
+        if four_curled_soft and (not finger_states["thumb"] or thumb_near_palm):
+            base = 0.55
+            # How tightly curled are the four fingers?
+            four_curl = sum(finger_curls[f] for f in ["index", "middle", "ring", "pinky"]) / 4.0
+            curl_bonus = four_curl * 0.22
+            # Thumb curl contributes less (wrapping ≠ curling)
+            thumb_bonus = min(finger_curls["thumb"], 0.5) * 0.08
+            # Compactness: all tips close to palm
             palm = self._extractor.get_palm_center(landmarks)
             tip_dists = [
-                float(np.linalg.norm(landmarks[t][:2] - palm[:2]))
-                for t in [THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP]
+                float(np.linalg.norm(landmarks[t] - palm))
+                for t in FINGER_TIPS
             ]
             avg_tip_dist = np.mean(tip_dists) / max(hand_size, 0.001)
-            if avg_tip_dist < 0.3:
-                score += 0.08
-            scores[GestureType.FIST] = min(score, 1.0)
+            compact_bonus = max(0, 0.35 - avg_tip_dist) * 0.5
+            scores[GestureType.FIST] = min(1.0, base + curl_bonus + thumb_bonus + compact_bonus)
 
         # --- OPEN PALM ---
-        if (finger_states["thumb"] and
-                finger_states["index"] and
-                finger_states["middle"] and
-                finger_states["ring"] and
+        if (finger_states["thumb"] and finger_states["index"] and
+                finger_states["middle"] and finger_states["ring"] and
                 finger_states["pinky"]):
-            score = 0.88
-            # Check finger spread
-            distances = self._extractor.get_inter_finger_distances(landmarks)
-            avg_spread = np.mean(list(distances.values()))
-            if avg_spread > 0.08:
-                score += 0.07
-            scores[GestureType.OPEN_PALM] = min(score, 1.0)
+            # Guard: tips must be far from palm (distinguishes true open palm
+            # from a fist with borderline finger states)
+            avg_tip = np.mean(list(tip_dists_norm.values()))
+            if avg_tip > 0.35:
+                base = 0.55
+                # How extended are all fingers?
+                all_ext = sum(1.0 - finger_curls[f] for f in ["thumb", "index", "middle", "ring", "pinky"]) / 5.0
+                ext_bonus = all_ext * 0.20
+                # Finger spread
+                avg_spread = np.mean(list(inter_distances.values()))
+                spread_bonus = min(0.10, avg_spread * 0.6) if avg_spread > 0.06 else 0
+                # Tip-to-palm distance bonus
+                reach_bonus = min(0.10, avg_tip * 0.2) if avg_tip > 0.3 else 0
+                scores[GestureType.OPEN_PALM] = min(1.0, base + ext_bonus + spread_bonus + reach_bonus)
 
         # --- FINGER POINT (index only) ---
-        if (not finger_states["thumb"] and
-                finger_states["index"] and
-                not finger_states["middle"] and
-                not finger_states["ring"] and
-                not finger_states["pinky"]):
-            scores[GestureType.FINGER_POINT] = 0.85
+        if (finger_states["index"] and not finger_states["middle"] and
+                not finger_states["ring"] and not finger_states["pinky"]):
+            # Guard: index tip must actually be extended away from palm.
+            # In a fist, ALL tips are near the palm; a true finger point
+            # has the index tip standing out significantly.
+            if tip_dists_norm["index"] > 0.50:
+                base = 0.50
+                # Index extension quality
+                idx_ext = (1.0 - finger_curls["index"]) * 0.15
+                # How curled are others?
+                curl_others = sum(finger_curls[f] for f in ["middle", "ring", "pinky"]) / 3.0
+                curl_bonus = curl_others * 0.18
+                # Thumb curled = cleaner point
+                thumb_bonus = 0.07 if not finger_states["thumb"] else 0
+                scores[GestureType.FINGER_POINT] = min(1.0, base + idx_ext + curl_bonus + thumb_bonus)
 
         # --- I LOVE YOU (thumb + index + pinky) ---
-        if (finger_states["thumb"] and
-                finger_states["index"] and
-                not finger_states["middle"] and
-                not finger_states["ring"] and
+        if (finger_states["thumb"] and finger_states["index"] and
+                not finger_states["middle"] and not finger_states["ring"] and
                 finger_states["pinky"]):
-            scores[GestureType.I_LOVE_YOU] = 0.88
+            base = 0.55
+            # Extension quality of three fingers
+            ext_score = sum(1.0 - finger_curls[f] for f in ["thumb", "index", "pinky"]) / 3.0
+            ext_bonus = ext_score * 0.15
+            # Curl quality of middle+ring
+            curl_score = (finger_curls["middle"] + finger_curls["ring"]) / 2.0
+            curl_bonus = curl_score * 0.18
+            scores[GestureType.I_LOVE_YOU] = min(1.0, base + ext_bonus + curl_bonus)
 
         if not scores:
             return None
 
-        # Apply adaptation offsets
+        # Apply adaptation offsets (type-safe: expects GestureType keys)
         for gesture, offset in self._adaptation_offsets.items():
             if gesture in scores:
                 scores[gesture] = min(1.0, max(0.0, scores[gesture] + offset))
+
+        # Ambiguity detection: if top-2 scores are too close, return None
+        if len(scores) >= 2:
+            sorted_scores = sorted(scores.values(), reverse=True)
+            gap = sorted_scores[0] - sorted_scores[1]
+            if gap < self._min_confidence_gap:
+                logger.debug("Ambiguous detection: gap=%.3f between top-2 gestures", gap)
+                return None
 
         # Pick highest scoring gesture
         best_gesture = max(scores, key=scores.get)
         best_score = scores[best_gesture]
 
-        # Check against threshold
+        # Check against per-gesture threshold
         threshold = self._thresholds.get(best_gesture.value, self._default_threshold)
         if best_score >= threshold:
-            return GestureResult(best_gesture, best_score)
+            return GestureResult(best_gesture, best_score, scores=scores)
 
         return None
 
@@ -278,13 +331,21 @@ class GestureClassifier:
         return None
 
     def apply_adaptation(self, offsets: dict):
-        """Apply user-specific adaptation offsets to gesture thresholds.
+        """Apply user-specific adaptation offsets to gesture scores.
 
         Args:
-            offsets: dict mapping GestureType -> float offset
+            offsets: dict mapping gesture_name (str) or GestureType -> float offset
         """
-        self._adaptation_offsets = offsets
-        logger.info("Applied adaptation offsets for %d gestures", len(offsets))
+        self._adaptation_offsets = {}
+        for key, value in offsets.items():
+            if isinstance(key, GestureType):
+                self._adaptation_offsets[key] = value
+            elif isinstance(key, str):
+                # Convert string keys to GestureType for type-safe comparison
+                gesture_type = GestureType.from_string(key)
+                if gesture_type != GestureType.NONE:
+                    self._adaptation_offsets[gesture_type] = value
+        logger.info("Applied adaptation offsets for %d gestures", len(self._adaptation_offsets))
 
     def reset_trajectory(self):
         """Clear trajectory history."""

@@ -1,6 +1,11 @@
 """
 Centralized configuration manager.
 Loads YAML configs and provides typed access with defaults.
+
+v2 improvements:
+    - Schema validation for critical config fields
+    - Type-safe access with warnings on invalid types
+    - Reset support for testing
 """
 
 import os
@@ -11,6 +16,30 @@ logger = logging.getLogger(__name__)
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _CONFIG_DIR = os.path.join(_BASE_DIR, "config")
+
+# Schema: required sections and their expected types
+_CONFIG_SCHEMA = {
+    "camera": {
+        "device_id": int,
+        "width": int,
+        "height": int,
+        "fps": int,
+    },
+    "mediapipe": {
+        "min_detection_confidence": float,
+        "min_tracking_confidence": float,
+    },
+    "recognition": {
+        "dwell_time_ms": int,
+    },
+    "media": {
+        "player": str,
+        "keybindings": dict,
+    },
+    "performance": {
+        "target_fps": int,
+    },
+}
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -56,7 +85,39 @@ class Config:
         except FileNotFoundError:
             logger.warning("Gestures file not found: %s", gestures_path)
 
+        # Validate schema
+        self._validate()
+
         return self
+
+    def _validate(self):
+        """Validate critical config fields against schema."""
+        warnings = []
+        for section_name, fields in _CONFIG_SCHEMA.items():
+            section = self._data.get(section_name)
+            if section is None:
+                warnings.append(f"Missing config section: '{section_name}'")
+                continue
+            if not isinstance(section, dict):
+                warnings.append(f"Section '{section_name}' should be a dict, got {type(section).__name__}")
+                continue
+            for field_name, expected_type in fields.items():
+                if field_name in section:
+                    value = section[field_name]
+                    # Allow int where float is expected
+                    if expected_type is float and isinstance(value, (int, float)):
+                        continue
+                    if not isinstance(value, expected_type):
+                        warnings.append(
+                            f"{section_name}.{field_name}: expected {expected_type.__name__}, "
+                            f"got {type(value).__name__} ({value!r})"
+                        )
+
+        if warnings:
+            for w in warnings:
+                logger.warning("Config validation: %s", w)
+        else:
+            logger.debug("Config validation passed")
 
     def get(self, key_path: str, default=None):
         """Get nested config value using dot notation: 'camera.width'."""
@@ -124,3 +185,9 @@ class Config:
     @property
     def base_dir(self) -> str:
         return _BASE_DIR
+
+    @classmethod
+    def reset(cls):
+        """Reset singleton instance (for testing)."""
+        cls._instance = None
+        cls._data = {}

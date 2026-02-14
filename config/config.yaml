@@ -34,15 +34,16 @@ mediapipe:
 # --- Gesture Recognition ---
 recognition:
   # Static gesture thresholds (per-gesture tuning)
+  # v2: Lowered to match new classifier score range (base 0.50 + curl bonuses)
   confidence_thresholds:
-    thumbs_up: 0.85
-    peace_sign: 0.82
-    ok_sign: 0.80
-    fist: 0.85
-    open_palm: 0.82
-    finger_point: 0.75
-    thumbs_down: 0.83
-    default: 0.80
+    thumbs_up: 0.65
+    peace_sign: 0.62
+    ok_sign: 0.60
+    fist: 0.65
+    open_palm: 0.60
+    finger_point: 0.58
+    thumbs_down: 0.63
+    default: 0.58
 
   # Temporal filtering
   temporal:

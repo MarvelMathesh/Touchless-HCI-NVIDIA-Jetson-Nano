@@ -86,14 +86,15 @@ class DatasetCollector:
 
         # Auto-augmentation
         if self._auto_augment:
-            self._augment_and_save(frame, gesture_dir, basename)
+            self._augment_and_save(frame, gesture_dir, basename, landmarks)
 
         self._counts[gesture_name] = count + 1
         self._total_saved += 1
 
         return img_path
 
-    def _augment_and_save(self, frame: np.ndarray, gesture_dir: str, basename: str):
+    def _augment_and_save(self, frame: np.ndarray, gesture_dir: str,
+                          basename: str, landmarks: np.ndarray = None):
         """Generate augmented versions of the sample."""
         augmentations = []
 
@@ -105,9 +106,9 @@ class DatasetCollector:
         dark = cv2.convertScaleAbs(frame, alpha=0.7, beta=-10)
         augmentations.append((dark, "dark"))
 
-        # 3. Gaussian noise
-        noise = np.random.normal(0, 5, frame.shape).astype(np.uint8)
-        noisy = cv2.add(frame, noise)
+        # 3. Gaussian noise (use int16 intermediate to avoid uint8 negative wrap)
+        noise = np.random.normal(0, 5, frame.shape).astype(np.int16)
+        noisy = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
         augmentations.append((noisy, "noise"))
 
         # 4. Horizontal flip
@@ -117,6 +118,13 @@ class DatasetCollector:
         for aug_frame, suffix in augmentations:
             aug_path = os.path.join(gesture_dir, f"{basename}_aug_{suffix}.{self._image_format}")
             cv2.imwrite(aug_path, aug_frame)
+
+        # Save flipped landmarks separately (x-coordinates mirrored)
+        if self._save_landmarks and landmarks is not None:
+            flipped_lm = landmarks.copy()
+            flipped_lm[:, 0] = 1.0 - flipped_lm[:, 0]  # Mirror x in normalized coords
+            lm_path = os.path.join(gesture_dir, f"{basename}_aug_flip_landmarks.npy")
+            np.save(lm_path, flipped_lm)
 
     def get_status(self) -> dict:
         """Get collection status for all gesture classes."""
