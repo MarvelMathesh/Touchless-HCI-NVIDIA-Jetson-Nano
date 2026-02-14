@@ -51,10 +51,11 @@ logger = logging.getLogger(__name__)
 class TouchlessMediaControl:
     """Main application orchestrating the gesture-controlled media system."""
 
-    def __init__(self, config: Config, mode: str = "control"):
+    def __init__(self, config: Config, mode: str = "control", profile: str = "full"):
         self._config = config
         self._mode = mode
         self._running = False
+        self._profile = profile
 
         # --- Initialize all modules ---
 
@@ -83,9 +84,16 @@ class TouchlessMediaControl:
         self._feedback = FeedbackManager(config.get_section("gestures"))
 
         # Intelligence
-        self._profiler = UserProfiler(config.adaptation)
-        self._error_detector = ErrorDetector()
-        self._analytics = Analytics()
+        # Intelligence (conditional based on profile)
+        if self._profile == "full":
+            self._profiler = UserProfiler(config.adaptation)
+            self._error_detector = ErrorDetector()
+            self._analytics = Analytics()
+        else:
+            self._profiler = None
+            self._error_detector = None
+            self._analytics = None
+
 
         # Visualization
         self._dashboard = Dashboard(config.visualization)
@@ -110,7 +118,8 @@ class TouchlessMediaControl:
     def _on_action_executed(self, action_name: str):
         """Callback when a media action is executed."""
         self._feedback.trigger(action_name)
-        self._analytics.record_action(action_name)
+        if self._analytics:
+            self._analytics.record_action(action_name)
         self._gesture_logger.log_action(action_name)
 
     def start(self, calibrate: bool = False):
@@ -144,7 +153,7 @@ class TouchlessMediaControl:
             self._run_calibration()
 
         # Load user profile if available
-        if self._profiler.load_profile("default"):
+        if self._profiler and self._profiler.load_profile("default"):
             offsets = self._profiler.get_adaptation_offsets()
             if offsets:
                 self._classifier.apply_adaptation(offsets)
@@ -165,6 +174,9 @@ class TouchlessMediaControl:
 
     def _run_calibration(self):
         """Run the 30-second user calibration sequence."""
+	if not self._profiler:
+            logger.warning("Calibration not available in this profile.")
+            return
         self._profiler.start_calibration("default")
         calibration_duration = self._config.get("adaptation.calibration_duration_sec", 30)
         calibration_start = time.time()
@@ -278,7 +290,9 @@ class TouchlessMediaControl:
         primary_hand = self._tracker.get_primary_hand()
         hand_detected = primary_hand is not None
 
-        self._analytics.record_frame(hand_detected)
+        if self._analytics:
+            self._analytics.record_frame(hand_detected)
+
 
         # 5. Gesture classification
         with self._perf.measure("classification"):
@@ -293,26 +307,36 @@ class TouchlessMediaControl:
                     self._current_confidence = filtered["confidence"]
 
                     # Record for analytics and adaptation
-                    self._analytics.record_gesture(self._current_gesture, self._current_confidence)
+                    # Record for analytics and adaptation
+                    if self._analytics:
+                        self._analytics.record_gesture(self._current_gesture, self._current_confidence)
                     self._confidence_scorer.record(self._current_gesture, self._current_confidence)
-                    self._error_detector.record(self._current_gesture, self._current_confidence)
-                    self._profiler.update(self._current_gesture, self._current_confidence)
+
+                    if self._error_detector:
+                        self._error_detector.record(self._current_gesture, self._current_confidence)
+
+                    if self._profiler:
+                        self._profiler.update(self._current_gesture, self._current_confidence)
+
                 else:
                     self._current_gesture = None
                     self._current_confidence = filtered.get("confidence", 0)
-                    self._error_detector.record("none", 0)
+                    if self._error_detector:
+                        self._error_detector.record("none", 0)
             else:
                 self._current_gesture = None
                 self._current_confidence = 0.0
                 self._temporal_filter.reset()
                 self._classifier.reset_trajectory()
-                self._error_detector.record("none", 0)
+                
+                if self._error_detector:
+                    self._error_detector.record("none", 0)
 
         # Draw landmarks on frame
         self._detector.draw_landmarks(frame, results)
 
         # Check for anomalies periodically
-        if self._frame_count % 30 == 0:
+        if self._error_detector and self._frame_count % 30 == 0:
             anomalies = self._error_detector.check_anomalies()
             if anomalies:
                 logger.warning("Anomalies detected: %s", anomalies)
@@ -374,8 +398,9 @@ class TouchlessMediaControl:
             "hand_bbox": bbox,
             "hand_count": self._tracker.hand_count,
             "mode": self._mode,
-            "calibrating": self._profiler.is_calibrating,
-            "calibration_progress": self._profiler.calibration_progress,
+            "calibrating": self._profiler.is_calibrating if self._profiler else False,
+            "calibration_progress": self._profiler.calibration_progress if self._profiler else 0,
+
         }
 
     def _run_benchmark_mode(self):
@@ -422,7 +447,8 @@ class TouchlessMediaControl:
 
         # Print final reports
         self._perf.print_report()
-        self._analytics.print_summary()
+        if self._analytics:
+            self._analytics.print_summary()
 
         logger.info("Shutdown complete.")
 
@@ -436,31 +462,42 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Touchless Media Control - Edge AI on Jetson Nano"
     )
+
     parser.add_argument(
         "--mode", choices=["control", "demo", "benchmark", "collect"],
         default="control", help="Operating mode"
     )
+
     parser.add_argument(
         "--calibrate", action="store_true",
         help="Run user calibration before starting"
     )
+
     parser.add_argument(
         "--config", type=str, default=None,
         help="Path to config.yaml"
     )
+
     parser.add_argument(
         "--gestures", type=str, default=None,
         help="Path to gestures.yaml"
     )
+
     parser.add_argument(
         "--camera", type=int, default=None,
         help="Camera device ID"
     )
+
     parser.add_argument(
-        "--profile", type=str, default=None,
-        help="User profile to load"
+        "--profile",
+        type=str,
+        default="full",
+        choices=["full", "minimal", "desktop"],
+        help="Execution profile (full, minimal, desktop)"
     )
+
     return parser.parse_args()
+
 
 
 def main():
@@ -490,7 +527,11 @@ def main():
     logger.info("=" * 60)
 
     # Create and start application
-    app = TouchlessMediaControl(config, mode=args.mode)
+    app = TouchlessMediaControl(
+        config,
+        mode=args.mode,
+        profile=args.profile
+    )
 
     # Register signal handlers
     signal.signal(signal.SIGINT, app.handle_signal)
