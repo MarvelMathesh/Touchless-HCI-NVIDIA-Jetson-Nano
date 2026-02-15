@@ -18,6 +18,19 @@ PyYAML>=5.1,<6.0
 # --- Performance Monitoring ---
 psutil>=5.6.0
 
+# --- ML Classifier (Phase 3) ---
+# PyTorch: Install from NVIDIA Jetson wheels (NOT pip)
+#   wget https://nvidia.box.com/shared/static/<hash>.whl
+#   pip3 install torch-1.10.0-cp36-cp36m-linux_aarch64.whl
+# torch>=1.8.0
+#
+# ONNX (for model export validation, optional)
+# onnx>=1.9.0
+#
+# TensorRT + PyCUDA: Pre-installed with JetPack 4.x
+# tensorrt (system package)
+# pycuda>=2019.1
+
 # ============================================================================
 # JETSON NANO INSTALLATION NOTES:
 #
@@ -37,4 +50,13 @@ psutil>=5.6.0
 # 5. Jetson performance monitoring:
 #      sudo pip3 install jetson-stats
 #      sudo jtop  (to monitor GPU/CPU/thermal)
+#
+# 6. PyTorch for Jetson Nano (Phase 3 ML Classifier):
+#      Visit https://forums.developer.nvidia.com/t/pytorch-for-jetson/
+#      Download torch-1.10.0 wheel for JetPack 4.x / Python 3.6
+#      pip3 install torch-1.10.0-cp36-cp36m-linux_aarch64.whl
+#
+# 7. TensorRT (Phase 3, pre-installed with JetPack):
+#      python3 -c "import tensorrt; print(tensorrt.__version__)"
+#      pip3 install pycuda
 # ============================================================================

@@ -154,3 +154,22 @@ data_collection:
   save_metadata: true
   samples_per_gesture: 400
   auto_augment: true
+
+# --- ML Classifier (Phase 3) ---
+ml_classifier:
+  enabled: true              # Set false to force rule-based only
+  model_dir: "models/weights"
+  trt_engine: "gesture_net.engine"   # TensorRT FP16 engine (fastest)
+  onnx_model: "gesture_net.onnx"     # ONNX model (fallback)
+  pth_model: "gesture_net.pth"       # PyTorch checkpoint (fallback)
+  confidence_threshold: 0.60         # Min ML confidence to accept
+  fallback_on_low_confidence: true   # Fall back to rules when ML is unsure
+  # Training parameters (used by training/train.py)
+  training:
+    epochs: 80
+    batch_size: 32
+    learning_rate: 0.001
+    weight_decay: 0.0001
+    val_split: 0.2
+    patience: 15
+    fp16: true               # TensorRT FP16 precision

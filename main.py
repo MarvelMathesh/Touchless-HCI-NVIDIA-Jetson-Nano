@@ -55,6 +55,7 @@ from modules.visualization.dashboard import Dashboard
 
 from core.events import EventBus, Events
 from core.pipeline import Pipeline
+from models.hybrid_classifier import HybridClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,20 @@ class TouchlessMediaControl:
         self._temporal_filter = TemporalFilter(config.recognition)
         self._confidence_scorer = ConfidenceScorer(config.recognition)
 
+        # ML Hybrid Classifier — wraps rule-based with ML model
+        # Uses TensorRT > PyTorch > rule-based (auto-selection)
+        ml_config = config.get_section("ml_classifier") or {}
+        if ml_config.get("enabled", True):
+            self._hybrid = HybridClassifier(
+                config=ml_config,
+                rule_classifier=self._classifier,
+            )
+            logger.info("ML Hybrid classifier active (backend: %s)",
+                        self._hybrid.backend)
+        else:
+            self._hybrid = self._classifier
+            logger.info("ML classifier disabled — using rule-based only")
+
         # Control
         self._executor = ActionExecutor(config.media)
         self._debouncer = Debouncer(config.debouncing)
@@ -122,7 +137,7 @@ class TouchlessMediaControl:
             detector=self._detector,
             extractor=self._extractor,
             tracker=self._tracker,
-            classifier=self._classifier,
+            classifier=self._hybrid,  # ML hybrid (auto-fallback to rules)
             temporal_filter=self._temporal_filter,
             confidence_scorer=self._confidence_scorer,
             debouncer=self._debouncer,
