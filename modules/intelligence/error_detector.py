@@ -25,6 +25,10 @@ class ErrorDetector:
         self._error_events = []
         self._flap_threshold = 5  # Max gesture changes in 2 seconds
 
+        # Throttle: suppress repeated anomaly logs for the same type
+        self._last_log_times = {}  # anomaly_type -> timestamp
+        self._log_cooldown = 10.0  # Seconds between same-type console warnings
+
     def record(self, gesture_name: str, confidence: float, action_taken: bool = False):
         """Record a gesture detection event."""
         now = time.time()
@@ -93,14 +97,19 @@ class ErrorDetector:
             })
 
         if anomalies:
+            now_t = time.time()
             for a in anomalies:
-                logger.warning("Anomaly [%s]: %s - %s",
-                               a["severity"], a["type"], a["message"])
                 self._error_events.append({
                     "anomaly": a["type"],
                     "severity": a["severity"],
-                    "time": time.time(),
+                    "time": now_t,
                 })
+                # Throttle console logging per anomaly type
+                last = self._last_log_times.get(a["type"], 0)
+                if now_t - last >= self._log_cooldown:
+                    self._last_log_times[a["type"]] = now_t
+                    logger.warning("Anomaly [%s]: %s - %s",
+                                   a["severity"], a["type"], a["message"])
 
         return anomalies
 

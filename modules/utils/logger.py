@@ -11,7 +11,10 @@ from functools import wraps
 
 def setup_logging(level="INFO", log_file=None, max_size_mb=10, backup_count=3):
     """Configure structured logging for the application."""
-    log_format = "%(asctime)s [%(levelname)-7s] %(name)-25s | %(message)s"
+    # Clean console format — compact and readable
+    console_format = "%(asctime)s  %(levelname)-5s  %(message)s"
+    # Verbose format for log file
+    file_format = "%(asctime)s [%(levelname)-7s] %(name)-25s | %(message)s"
     date_format = "%H:%M:%S"
 
     root_logger = logging.getLogger()
@@ -20,10 +23,10 @@ def setup_logging(level="INFO", log_file=None, max_size_mb=10, backup_count=3):
     # Remove existing handlers
     root_logger.handlers.clear()
 
-    # Console handler
+    # Console handler — only INFO+ and clean format
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
-    console.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+    console.setFormatter(logging.Formatter(console_format, datefmt=date_format))
     root_logger.addHandler(console)
 
     # File handler (rotating)
@@ -37,7 +40,7 @@ def setup_logging(level="INFO", log_file=None, max_size_mb=10, backup_count=3):
             backupCount=backup_count,
         )
         file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+        file_handler.setFormatter(logging.Formatter(file_format, datefmt=date_format))
         root_logger.addHandler(file_handler)
 
     return root_logger

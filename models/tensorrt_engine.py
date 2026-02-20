@@ -178,7 +178,12 @@ class TensorRTEngine:
 
     def __del__(self):
         try:
-            self.destroy()
+            # Skip logging during interpreter shutdown to avoid NameError
+            del self._context
+            del self._engine
+            self._inputs.clear()
+            self._outputs.clear()
+            self._bindings.clear()
         except Exception:
             pass
 

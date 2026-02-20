@@ -61,6 +61,12 @@ class HandTracker:
         if results and results.multi_hand_landmarks:
             for i, hand_lm in enumerate(results.multi_hand_landmarks):
                 landmarks = landmark_extractor.extract_landmarks(hand_lm)
+
+                # Reject false-positive detections (e.g. face misread as hand)
+                # A real hand has reasonable spread between landmarks
+                if not self._is_valid_hand(landmarks):
+                    continue
+
                 handedness = "unknown"
                 if results.multi_handedness and i < len(results.multi_handedness):
                     handedness = results.multi_handedness[i].classification[0].label.lower()
@@ -115,6 +121,37 @@ class HandTracker:
                 best_id = hand_id
 
         return best_id
+
+    @staticmethod
+    def _is_valid_hand(landmarks: np.ndarray) -> bool:
+        """Reject unlikely hand detections (e.g. face features misread as hand).
+
+        Checks that the 21-point skeleton has a reasonable spatial layout:
+        - Sufficient overall spread (not all points collapsed)
+        - Wrist-to-middle-fingertip distance is realistic
+        - Aspect ratio not too extreme (hands are roughly square-ish)
+        """
+        # Bounding box of all landmarks (normalized 0..1 coords)
+        xy = landmarks[:, :2]
+        bbox_span = np.ptp(xy, axis=0)  # (x_spread, y_spread)
+        total_spread = bbox_span.sum()
+
+        # Too tiny = noise / distant face feature
+        if total_spread < 0.05:
+            return False
+
+        # Wrist (0) to middle fingertip (12) should be a reasonable length
+        wrist_to_tip = float(np.linalg.norm(landmarks[0, :2] - landmarks[12, :2]))
+        if wrist_to_tip < 0.03:
+            return False
+
+        # Aspect ratio check: hand shouldn't be >4:1 thin sliver
+        min_span = max(bbox_span.min(), 1e-6)
+        aspect = bbox_span.max() / min_span
+        if aspect > 4.0:
+            return False
+
+        return True
 
     def _update_primary(self):
         """Set primary hand (largest bounding box = closest to camera)."""

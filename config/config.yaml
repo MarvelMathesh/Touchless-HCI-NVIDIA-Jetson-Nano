@@ -65,7 +65,7 @@ recognition:
 # Fire-once pattern: toggle actions fire once per gesture,
 # then require gesture release before they can fire again.
 debouncing:
-  hold_repeat_ms: 200        # Rate for held actions (volume)
+  hold_repeat_ms: 500        # Rate for held actions (volume) — fires ~2x/sec
   post_release_cooldown_ms: 400  # Anti-flicker guard after gesture release
   max_queue_size: 5          # Action queue limit
 

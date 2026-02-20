@@ -229,7 +229,6 @@ class Pipeline:
         if self._frame_count % self._anomaly_check_interval == 0:
             anomalies = self._error_detector.check_anomalies()
             if anomalies:
-                logger.warning("Anomalies: %s", anomalies)
                 self._bus.emit(Events.ANOMALY_DETECTED, anomalies=anomalies)
 
         # --- 10. Timing ---
