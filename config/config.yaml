@@ -75,12 +75,16 @@ media:
   control_method: "xdotool"  # xdotool | dbus | python-vlc
   keybindings:
     play_pause: "space"
-    volume_up: "plus"
-    volume_down: "minus"
+    volume_up: "ctrl+Up"             # VLC volume up (Ctrl+Up arrow)
+    volume_down: "ctrl+Down"         # VLC volume down (Ctrl+Down arrow)
     seek_forward: "Right"
     seek_backward: "Left"
     mute: "m"
     fullscreen: "f"
+    subtitles: "v"
+    playback_speed_up: "bracketright"   # VLC ']' - increase speed (+0.1x)
+    playback_speed_reset: "equal"       # VLC '=' - reset to 1x
+    aspect_ratio: "a"
     quit_player: "q"
   seek_seconds: 10
   volume_step: 5

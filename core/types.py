@@ -55,8 +55,9 @@ class MediaAction(Enum):
     SEEK_BACKWARD = "seek_backward"
     MUTE = "mute"
     FULLSCREEN = "fullscreen"
-    SMART_PAUSE = "smart_pause"
-    SEEK_POSITION = "seek_position"
+    SUBTITLES = "subtitles"
+    PLAYBACK_SPEED = "playback_speed"
+    ASPECT_RATIO = "aspect_ratio"
 
 
 # =============================================================================
@@ -64,15 +65,16 @@ class MediaAction(Enum):
 # =============================================================================
 
 GESTURE_ACTION_MAP: Dict[GestureType, str] = {
-    GestureType.THUMBS_UP: "play_pause",
-    GestureType.THUMBS_DOWN: "smart_pause",
-    GestureType.PEACE_SIGN: "volume_up",
-    GestureType.OK_SIGN: "volume_down",
+    GestureType.OPEN_PALM: "play_pause",
+    GestureType.THUMBS_UP: "volume_up",
+    GestureType.THUMBS_DOWN: "volume_down",
     GestureType.FIST: "mute",
-    GestureType.OPEN_PALM: "fullscreen",
-    GestureType.FINGER_POINT: "seek_position",
-    GestureType.SWIPE_LEFT: "seek_backward",
+    GestureType.OK_SIGN: "fullscreen",
     GestureType.SWIPE_RIGHT: "seek_forward",
+    GestureType.SWIPE_LEFT: "seek_backward",
+    GestureType.I_LOVE_YOU: "subtitles",
+    GestureType.FINGER_POINT: "playback_speed",
+    GestureType.PEACE_SIGN: "aspect_ratio",
 }
 
 

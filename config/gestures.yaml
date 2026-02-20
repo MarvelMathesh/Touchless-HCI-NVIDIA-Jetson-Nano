@@ -7,10 +7,12 @@
 static_gestures:
   thumbs_up:
     display_name: "Thumbs Up"
-    action: "play_pause"
-    description: "Thumb extended upward, other fingers curled"
+    action: "volume_up"
+    description: "Thumb extended upward - volume increase"
     priority: 1
-    dwell_ms: 400
+    dwell_ms: 300
+    holdable: true
+    hold_repeat_ms: 200
     rules:
       thumb_extended: true
       index_curled: true
@@ -21,12 +23,10 @@ static_gestures:
 
   peace_sign:
     display_name: "Peace / Victory"
-    action: "volume_up"
-    description: "Index and middle fingers extended in V shape"
+    action: "aspect_ratio"
+    description: "Index and middle fingers in V - cycle display aspect ratios"
     priority: 2
-    dwell_ms: 300
-    holdable: true
-    hold_repeat_ms: 200
+    dwell_ms: 500
     rules:
       thumb_curled: true
       index_extended: true
@@ -36,12 +36,10 @@ static_gestures:
 
   ok_sign:
     display_name: "OK Sign"
-    action: "volume_down"
-    description: "Thumb and index forming circle, others extended"
+    action: "fullscreen"
+    description: "Thumb and index forming circle - fullscreen toggle"
     priority: 2
-    dwell_ms: 300
-    holdable: true
-    hold_repeat_ms: 200
+    dwell_ms: 500
     rules:
       thumb_index_circle: true
       middle_extended: true
@@ -63,10 +61,10 @@ static_gestures:
 
   open_palm:
     display_name: "Open Palm"
-    action: "fullscreen"
-    description: "All fingers extended, palm facing camera"
+    action: "play_pause"
+    description: "All fingers extended, palm facing camera - play/pause toggle"
     priority: 3
-    dwell_ms: 600
+    dwell_ms: 500
     rules:
       thumb_extended: true
       index_extended: true
@@ -77,10 +75,12 @@ static_gestures:
 
   thumbs_down:
     display_name: "Thumbs Down"
-    action: "smart_pause"
-    description: "Thumb extended downward - pause and rewind 5s"
+    action: "volume_down"
+    description: "Thumb extended downward - volume decrease"
     priority: 1
-    dwell_ms: 400
+    dwell_ms: 300
+    holdable: true
+    hold_repeat_ms: 200
     rules:
       thumb_extended: true
       index_curled: true
@@ -91,10 +91,10 @@ static_gestures:
 
   finger_point:
     display_name: "Pointing"
-    action: "seek_position"
-    description: "Index finger extended, others curled - seek with movement"
+    action: "playback_speed"
+    description: "Index finger extended - toggle playback speed (1x / 2x)"
     priority: 4
-    dwell_ms: 200
+    dwell_ms: 500
     rules:
       thumb_curled: true
       index_extended: true
@@ -104,8 +104,8 @@ static_gestures:
 
   i_love_you:
     display_name: "I Love You"
-    action: "none"
-    description: "Thumb, index, and pinky extended (reserved for calibration)"
+    action: "subtitles"
+    description: "Thumb, index, and pinky extended - toggle subtitles ON/OFF"
     priority: 5
     dwell_ms: 500
     rules:
@@ -176,15 +176,20 @@ actions:
     icon: "[ ]"
     feedback_color: [255, 0, 255]
 
-  smart_pause:
-    display_name: "Smart Pause"
-    icon: "<<||"
+  subtitles:
+    display_name: "Subtitles"
+    icon: "CC"
     feedback_color: [255, 100, 0]
 
-  seek_position:
-    display_name: "Seek Position"
-    icon: "|>"
+  playback_speed:
+    display_name: "Speed Toggle"
+    icon: "2x"
     feedback_color: [200, 200, 0]
+
+  aspect_ratio:
+    display_name: "Aspect Ratio"
+    icon: "AR"
+    feedback_color: [100, 200, 255]
 
 # --- Gesture Macros (Innovation Feature) ---
 macros:

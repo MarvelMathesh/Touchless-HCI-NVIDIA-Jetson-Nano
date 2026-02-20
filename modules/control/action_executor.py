@@ -3,11 +3,6 @@ Media action executor for VLC control.
 Supports xdotool (X11) and D-Bus MPRIS2 backends.
 Async execution prevents blocking the main pipeline.
 
-v2 improvements:
-    - Fixed smart_pause execution path (no longer returns None)
-    - D-Bus MPRIS2 backend for bidirectional VLC control
-    - MediaAction enum from core.types
-    - Proper callback invocation after action completion
 """
 
 import time
@@ -34,6 +29,9 @@ class ActionExecutor:
         self._last_action = None
         self._last_action_time = 0
         self._action_count = 0
+
+        # Playback speed toggle state (alternates between 1x and 2x)
+        self._speed_is_2x = False
 
         # Check available backends
         self._xdotool_available = self._check_xdotool()
@@ -82,15 +80,15 @@ class ActionExecutor:
         Returns:
             True if action was dispatched
         """
-        # Handle special composite actions directly
-        if action_name == "smart_pause":
+        # Handle special composite actions
+        if action_name == "playback_speed":
             if async_exec:
                 thread = threading.Thread(
-                    target=self._execute_smart_pause, daemon=True
+                    target=self._execute_playback_speed_toggle, daemon=True
                 )
                 thread.start()
             else:
-                self._execute_smart_pause()
+                self._execute_playback_speed_toggle()
             self._record_action(action_name)
             return True
 
@@ -132,21 +130,40 @@ class ActionExecutor:
             except Exception as e:
                 logger.error("Action callback error: %s", e)
 
-    def _execute_smart_pause(self):
-        """Smart Pause: Pause + rewind 5 seconds."""
+    def _execute_playback_speed_toggle(self):
+        """Toggle between 1x and 2x playback speed."""
         if self._method == "dbus":
-            self._send_dbus("play_pause")
-            time.sleep(0.1)
-            self._send_dbus("seek_backward")
+            try:
+                import dbus
+                bus = dbus.SessionBus()
+                player = bus.get_object(
+                    "org.mpris.MediaPlayer2.vlc",
+                    "/org/mpris/MediaPlayer2"
+                )
+                props = dbus.Interface(player, "org.freedesktop.DBus.Properties")
+                target_rate = 1.0 if self._speed_is_2x else 2.0
+                props.Set("org.mpris.MediaPlayer2.Player", "Rate", target_rate)
+                self._speed_is_2x = not self._speed_is_2x
+                logger.info("Playback speed: %.1fx", target_rate)
+                return
+            except Exception as e:
+                logger.warning("D-Bus speed toggle failed: %s, falling back to xdotool", e)
+
+        # xdotool fallback: reset to 1x (=) or ramp up to 2x (] x10)
+        if self._speed_is_2x:
+            key = self._keybindings.get("playback_speed_reset", "equal")
+            self._send_key(key, "playback_speed_reset")
+            logger.info("Playback speed: 1.0x")
         else:
-            key_pause = self._keybindings.get("play_pause")
-            key_seek = self._keybindings.get("seek_backward")
-            if key_pause:
-                self._send_key(key_pause, "play_pause")
+            reset_key = self._keybindings.get("playback_speed_reset", "equal")
+            self._send_key(reset_key, "playback_speed_reset")
             time.sleep(0.1)
-            if key_seek:
-                self._send_key(key_seek, "seek_backward")
-        logger.info("Smart Pause: paused and rewound")
+            key = self._keybindings.get("playback_speed_up", "bracketright")
+            for _ in range(10):
+                self._send_key(key, "playback_speed_up")
+                time.sleep(0.05)
+            logger.info("Playback speed: 2.0x")
+        self._speed_is_2x = not self._speed_is_2x
 
     def _send_key(self, key: str, action_name: str):
         """Send keystroke to VLC via xdotool."""
@@ -200,12 +217,19 @@ class ActionExecutor:
                     "org.mpris.MediaPlayer2", "Fullscreen",
                     not bool(props.Get("org.mpris.MediaPlayer2", "Fullscreen"))
                 ),
+                "subtitles": None,       # No MPRIS2 subtitle API — falls through to xdotool
+                "aspect_ratio": None,    # No MPRIS2 aspect API — falls through to xdotool
             }
 
             action_fn = dbus_action_map.get(action_name)
             if action_fn:
                 action_fn()
                 logger.debug("D-Bus action executed: %s", action_name)
+            elif action_fn is None and action_name in dbus_action_map:
+                # Explicitly unsupported in D-Bus — fall through to xdotool
+                key = self._keybindings.get(action_name)
+                if key:
+                    self._send_key(key, action_name)
             else:
                 logger.warning("No D-Bus mapping for action: %s", action_name)
 
