@@ -52,6 +52,13 @@ class GestureClassifier:
         self._swipe_min_dist = dyn_config.get("swipe_min_distance", 80)
         self._trajectory = deque(maxlen=self._trajectory_window)
 
+        # Trajectory smoothing (EMA) to filter MediaPipe landmark jitter
+        self._smoothed_palm = None
+        self._ema_alpha = dyn_config.get("ema_alpha", 0.5)  # 0=no smoothing, 1=no memory
+
+        # Minimum extended fingers to accept a trajectory point (hand-pose gate)
+        self._swipe_min_fingers = dyn_config.get("swipe_min_fingers", 3)
+
         # User adaptation offsets {GestureType -> float}
         self._adaptation_offsets = {}
 
@@ -75,21 +82,35 @@ class GestureClassifier:
         Returns:
             GestureResult with gesture type, confidence, and action
         """
-        # Track trajectory for dynamic gestures
+        # --- Hand-pose gating for trajectory ---
+        # Only record trajectory points when the hand is in a "swipe-ready"
+        # pose (>= N fingers extended).  This prevents fist-movements,
+        # pointing repositions, etc. from polluting the swipe signal.
+        finger_states = self._extractor.get_finger_states(landmarks)
+        extended_count = sum(1 for v in finger_states.values() if v)
+
         palm_center = self._extractor.get_palm_center(landmarks)
-        self._trajectory.append((palm_center.copy(), time.time()))
 
-        # Try static gesture classification first
-        static_result = self._classify_static(landmarks)
+        if extended_count >= self._swipe_min_fingers:
+            # Apply EMA smoothing to filter MediaPipe landmark jitter
+            if self._smoothed_palm is None:
+                self._smoothed_palm = palm_center.copy()
+            else:
+                self._smoothed_palm = (
+                    self._ema_alpha * palm_center
+                    + (1.0 - self._ema_alpha) * self._smoothed_palm
+                )
+            self._trajectory.append((self._smoothed_palm.copy(), time.time()))
 
-        # Try dynamic gesture classification
+        # Try dynamic gesture classification FIRST — a detected swipe
+        # always takes priority because the concurrent static result
+        # merely describes hand shape during the motion, not user intent.
         dynamic_result = self._classify_dynamic()
+        if dynamic_result and dynamic_result.confidence > 0.65:
+            return dynamic_result
 
-        # Return whichever has higher confidence
-        if dynamic_result and dynamic_result.confidence > 0.7:
-            if not static_result or dynamic_result.confidence > static_result.confidence:
-                return dynamic_result
-
+        # Static gesture classification
+        static_result = self._classify_static(landmarks)
         if static_result:
             return static_result
 
@@ -293,40 +314,63 @@ class GestureClassifier:
         return None
 
     def _classify_dynamic(self) -> GestureResult:
-        """Classify dynamic (motion-based) gestures from trajectory."""
-        if len(self._trajectory) < 5:
+        """Classify dynamic (motion-based) gestures from smoothed trajectory.
+
+        Uses the most recent half of the trajectory window to allow
+        detection even if early frames were noisy or pre-motion.
+        """
+        if len(self._trajectory) < 4:
             return None
 
         positions = [p for p, _ in self._trajectory]
         timestamps = [t for _, t in self._trajectory]
 
-        # Calculate displacement
+        duration = timestamps[-1] - timestamps[0]
+        if duration < 0.05 or duration > 1.5:
+            # Too fast (noise) or too slow (not a swipe)
+            return None
+
+        # Use first-to-last displacement for direction/distance,
+        # but also check intermediate consistency (monotonic motion).
         start_pos = positions[0]
         end_pos = positions[-1]
         dx = end_pos[0] - start_pos[0]
         dy = end_pos[1] - start_pos[1]
 
-        duration = timestamps[-1] - timestamps[0]
-        if duration < 0.05:
-            return None
-
-        # Calculate velocity (normalized coords per second)
+        # Velocity from smoothed trajectory (already EMA-filtered)
         velocity = abs(dx) / max(duration, 0.001)
-
-        # Convert to approximate pixels for threshold comparison
         velocity_px = velocity * self._extractor._frame_width
 
-        # Check for horizontal swipe
-        if velocity_px > self._min_velocity and abs(dx) > abs(dy) * 2:
-            displacement_px = abs(dx) * self._extractor._frame_width
-            if displacement_px > self._swipe_min_dist:
-                confidence = min(1.0, 0.7 + velocity_px / 1000.0)
-                if dx > 0:
-                    self._trajectory.clear()
-                    return GestureResult(GestureType.SWIPE_RIGHT, confidence, is_dynamic=True)
-                else:
-                    self._trajectory.clear()
-                    return GestureResult(GestureType.SWIPE_LEFT, confidence, is_dynamic=True)
+        # Horizontal dominance: dx must be at least 1.5× dy
+        if abs(dx) < abs(dy) * 1.5:
+            return None
+
+        displacement_px = abs(dx) * self._extractor._frame_width
+
+        if velocity_px > self._min_velocity and displacement_px > self._swipe_min_dist:
+            # Motion consistency: check that the intermediate points mostly
+            # move in the same direction (reject shaky back-and-forth).
+            direction = 1.0 if dx > 0 else -1.0
+            consistent = 0
+            for i in range(1, len(positions)):
+                step_dx = positions[i][0] - positions[i - 1][0]
+                if step_dx * direction > 0:
+                    consistent += 1
+            consistency_ratio = consistent / max(len(positions) - 1, 1)
+
+            if consistency_ratio < 0.5:
+                return None  # Too much back-and-forth
+
+            # Confidence: combines velocity, displacement, and consistency
+            conf_vel = min(1.0, velocity_px / 600.0)  # scale velocity contribution
+            conf_disp = min(1.0, displacement_px / 200.0)
+            confidence = 0.5 + 0.2 * conf_vel + 0.15 * conf_disp + 0.15 * consistency_ratio
+            confidence = min(1.0, confidence)
+
+            gesture = GestureType.SWIPE_RIGHT if dx > 0 else GestureType.SWIPE_LEFT
+            self._trajectory.clear()
+            self._smoothed_palm = None
+            return GestureResult(gesture, confidence, is_dynamic=True)
 
         return None
 
@@ -348,5 +392,6 @@ class GestureClassifier:
         logger.info("Applied adaptation offsets for %d gestures", len(self._adaptation_offsets))
 
     def reset_trajectory(self):
-        """Clear trajectory history."""
+        """Clear trajectory history and smoothing state."""
         self._trajectory.clear()
+        self._smoothed_palm = None

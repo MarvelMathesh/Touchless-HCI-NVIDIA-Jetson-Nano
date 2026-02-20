@@ -61,6 +61,23 @@ class TemporalFilter:
                 - dwell_ms: float - elapsed dwell time
                 - raw: original gesture_result
         """
+        # --- Dynamic gesture bypass ---
+        # Swipes and other motion-based gestures are transient one-shot
+        # events.  They CANNOT accumulate dwell time or sustain consensus
+        # across multiple frames.  Pass them through as immediately stable.
+        if getattr(gesture_result, "is_dynamic", False) and gesture_result.confidence > 0:
+            self._window.clear()
+            self._current_gesture = None
+            self._gesture_onset = None
+            self._mismatch_count = 0
+            return {
+                "gesture": gesture_result.gesture,
+                "confidence": gesture_result.confidence,
+                "stable": True,
+                "dwell_ms": 0,
+                "raw": gesture_result,
+            }
+
         gesture = gesture_result.gesture
         confidence = gesture_result.confidence
         now = time.time()

@@ -107,6 +107,8 @@ class Pipeline:
         self._current_gesture = None
         self._current_confidence = 0.0
         self._mode = config.get("mode", "control")
+        self._last_hand_seen = 0.0  # timestamp of last hand detection
+        self._trajectory_grace_sec = 0.3  # don't clear trajectory for brief drops
 
         # Share extractor with classifier
         self._classifier.set_extractor(self._extractor)
@@ -166,6 +168,7 @@ class Pipeline:
         self._analytics.record_frame(result.hand_detected)
 
         if result.hand_detected:
+            self._last_hand_seen = time.time()
             self._bus.emit(Events.HAND_DETECTED, hand=primary_hand)
 
         # --- 6. Gesture Classification ---
@@ -203,8 +206,12 @@ class Pipeline:
             else:
                 self._current_gesture = None
                 self._current_confidence = 0.0
-                self._temporal_filter.reset()
-                self._classifier.reset_trajectory()
+                # Only reset trajectory after sustained hand loss.
+                # Brief drops (< 300ms) from motion blur should NOT
+                # destroy the accumulated swipe trajectory.
+                if time.time() - self._last_hand_seen > self._trajectory_grace_sec:
+                    self._temporal_filter.reset()
+                    self._classifier.reset_trajectory()
                 self._error_detector.record("none", 0)
 
         # Fire-once lifecycle: detect gesture transitions
