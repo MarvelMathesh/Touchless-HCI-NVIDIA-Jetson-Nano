@@ -62,10 +62,11 @@ recognition:
   dwell_time_ms: 400
 
 # --- Debouncing & Action Control ---
+# Fire-once pattern: toggle actions fire once per gesture,
+# then require gesture release before they can fire again.
 debouncing:
-  cooldown_ms: 500           # Minimum time between different actions
-  repeat_cooldown_ms: 300    # Cooldown for same action repeat
   hold_repeat_ms: 200        # Rate for held actions (volume)
+  post_release_cooldown_ms: 400  # Anti-flicker guard after gesture release
   max_queue_size: 5          # Action queue limit
 
 # --- Media Control (VLC) ---

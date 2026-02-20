@@ -169,6 +169,7 @@ class Pipeline:
             self._bus.emit(Events.HAND_DETECTED, hand=primary_hand)
 
         # --- 6. Gesture Classification ---
+        prev_gesture = self._current_gesture
         with self._perf.measure("classification"):
             if primary_hand is not None:
                 raw_result = self._classifier.classify(primary_hand.landmarks)
@@ -199,16 +200,19 @@ class Pipeline:
                     self._current_confidence = filtered.get("confidence", 0)
                     result.gesture_confidence = self._current_confidence
                     self._error_detector.record("none", 0)
-
-                    # End any held actions when gesture is lost
-                    self._debouncer.end_all_holds()
             else:
                 self._current_gesture = None
                 self._current_confidence = 0.0
                 self._temporal_filter.reset()
                 self._classifier.reset_trajectory()
                 self._error_detector.record("none", 0)
-                self._debouncer.end_all_holds()
+
+        # Fire-once lifecycle: detect gesture transitions
+        if self._current_gesture != prev_gesture:
+            if self._current_gesture is None:
+                self._debouncer.gesture_lost()
+            else:
+                self._debouncer.gesture_changed(self._current_gesture)
 
         # --- 7. Action Execution (control mode only) ---
         if self._mode == "control" and result.gesture_name:
