@@ -88,7 +88,8 @@ class TouchlessMediaControl:
         self._detector = HandDetector(config.mediapipe)
         self._extractor = LandmarkExtractor()
         self._tracker = HandTracker(
-            max_hands=config.get("mediapipe.max_num_hands", 2)
+            max_hands=config.get("mediapipe.max_num_hands", 2),
+            interaction_zone=config.get_section("interaction_zone"),
         )
 
         # Recognition

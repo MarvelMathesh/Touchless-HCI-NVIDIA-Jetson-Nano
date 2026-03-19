@@ -109,6 +109,7 @@ class Pipeline:
         self._mode = config.get("mode", "control")
         self._last_hand_seen = 0.0  # timestamp of last hand detection
         self._trajectory_grace_sec = 0.3  # don't clear trajectory for brief drops
+        self._last_tick_time = 0.0  # For thermal FPS enforcement
 
         # Share extractor with classifier
         self._classifier.set_extractor(self._extractor)
@@ -242,6 +243,17 @@ class Pipeline:
         self._perf.tick()
         result.latency_ms = self._perf.total_latency_ms
 
+        # --- 11. Thermal FPS enforcement ---
+        # If device is warm/hot, cap frame rate to prevent thermal throttle.
+        if self._thermal:
+            target_fps = self._thermal.get_recommended_fps()
+            if target_fps > 0:
+                min_interval = 1.0 / target_fps
+                elapsed = time.time() - self._last_tick_time
+                if elapsed < min_interval:
+                    time.sleep(min_interval - elapsed)
+        self._last_tick_time = time.time()
+
         return result
 
     def _try_execute(self, gesture_name: str, confidence: float) -> dict:
@@ -264,10 +276,7 @@ class Pipeline:
         if not self._confidence_scorer.should_execute(gesture_name, confidence):
             return {"action": action, "executed": False}
 
-        # Ambiguity check (use scores if available)
-        # Already handled in classifier, but double-check with scorer
-        # if self._confidence_scorer.check_ambiguity(scores):
-        #     return {"action": action, "executed": False}
+
 
         # Debouncing
         if not self._debouncer.can_execute(action):

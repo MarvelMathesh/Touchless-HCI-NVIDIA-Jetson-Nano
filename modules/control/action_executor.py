@@ -80,6 +80,7 @@ class ActionExecutor:
         Returns:
             True if action was dispatched
         """
+
         # Handle special composite actions
         if action_name == "playback_speed":
             if async_exec:

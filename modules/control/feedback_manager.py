@@ -31,8 +31,9 @@ class FeedbackManager:
             "seek_backward": {"icon": "<<", "label": "Back 10s", "color": (255, 200, 0)},
             "mute": {"icon": "MUTE", "label": "Mute/Unmute", "color": (0, 0, 255)},
             "fullscreen": {"icon": "[ ]", "label": "Fullscreen", "color": (255, 0, 255)},
-            "smart_pause": {"icon": "<<||", "label": "Smart Pause", "color": (255, 100, 0)},
-            "seek_position": {"icon": "|>", "label": "Seek", "color": (200, 200, 0)},
+            "subtitles": {"icon": "CC", "label": "Subtitles", "color": (255, 100, 0)},
+            "playback_speed": {"icon": "2x", "label": "Speed Toggle", "color": (200, 200, 0)},
+            "aspect_ratio": {"icon": "AR", "label": "Aspect Ratio", "color": (100, 200, 255)},
         }
 
     def trigger(self, action_name: str):

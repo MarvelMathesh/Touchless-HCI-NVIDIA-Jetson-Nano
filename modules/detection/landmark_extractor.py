@@ -300,11 +300,4 @@ class LandmarkExtractor:
         cos_angle = np.clip(cos_angle, -1.0, 1.0)
         return float(np.degrees(np.arccos(cos_angle)))
 
-    @staticmethod
-    def _angle_between(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-        """Angle at point b formed by points a-b-c, in degrees (2D fallback)."""
-        ba = a[:2] - b[:2]
-        bc = c[:2] - b[:2]
-        cos_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
-        cos_angle = np.clip(cos_angle, -1.0, 1.0)
-        return float(np.degrees(np.arccos(cos_angle)))
+

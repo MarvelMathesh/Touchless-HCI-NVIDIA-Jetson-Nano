@@ -41,12 +41,14 @@ class Dashboard:
 
         # Gesture legend
         self._gesture_legend = [
-            ("Thumbs Up", "Play/Pause"),
-            ("Peace", "Vol+"),
-            ("OK", "Vol-"),
+            ("Palm", "Play/Pause"),
+            ("ThumbUp", "Vol+"),
+            ("ThumbDn", "Vol-"),
             ("Fist", "Mute"),
-            ("Palm", "Fullscreen"),
+            ("OK", "Fullscreen"),
             ("Swipe", "Seek"),
+            ("Point", "Speed"),
+            ("ILY", "Subs"),
         ]
 
     def render(self, frame: np.ndarray, state: dict) -> np.ndarray:

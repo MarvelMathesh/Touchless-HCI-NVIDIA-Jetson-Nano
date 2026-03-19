@@ -26,10 +26,20 @@ camera:
 # On Jetson Nano with MediaPipe 0.8.5, it will be silently ignored
 mediapipe:
   model_complexity: 0       # 0=Lite (fastest), 1=Full (ignored on 0.8.5)
-  max_num_hands: 2          # Support multi-user
+  max_num_hands: 1          # Single-user lock (prevents multi-person confusion)
   min_detection_confidence: 0.6
   min_tracking_confidence: 0.5
   static_image_mode: false  # Video stream mode (faster)
+
+# --- Interaction Zone ---
+# Only accept hands within this ROI (fraction of frame: 0.0-1.0)
+# Set enabled: false to accept gestures from anywhere in frame
+interaction_zone:
+  enabled: true
+  x: 0.1                    # Left boundary (10% from left edge)
+  y: 0.05                   # Top boundary (5% from top)
+  width: 0.8                # Zone width (80% of frame)
+  height: 0.85              # Zone height (85% of frame)
 
 # --- Gesture Recognition ---
 recognition:

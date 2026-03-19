@@ -34,6 +34,16 @@ class CameraManager:
         self._thread = None
         self._capture_times = []
 
+        # Camera reconnection
+        self._consecutive_failures = 0
+        self._max_failures_before_reconnect = 30  # ~1 second at 30 FPS
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 5
+
+        # Actual resolution (set after open)
+        self._actual_width = self._width
+        self._actual_height = self._height
+
     def open(self) -> bool:
         """Open camera with optimized settings."""
         backend_map = {
@@ -58,6 +68,8 @@ class CameraManager:
         actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
+        self._actual_width = actual_w
+        self._actual_height = actual_h
         logger.info(
             "Camera opened: %dx%d @ %.0f FPS (requested %dx%d @ %d)",
             actual_w, actual_h, actual_fps,
@@ -88,6 +100,8 @@ class CameraManager:
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             if ret and frame is not None:
+                self._consecutive_failures = 0
+                self._reconnect_attempts = 0
                 if self._flip_h:
                     frame = cv2.flip(frame, 1)
                 with self._lock:
@@ -97,6 +111,9 @@ class CameraManager:
                     if len(self._capture_times) > 100:
                         self._capture_times = self._capture_times[-100:]
             else:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._max_failures_before_reconnect:
+                    self._try_reconnect()
                 time.sleep(0.001)
 
     def read(self):
@@ -135,7 +152,8 @@ class CameraManager:
 
     @property
     def resolution(self) -> tuple:
-        return (self._width, self._height)
+        """Return actual camera resolution (may differ from config if not supported)."""
+        return (self._actual_width, self._actual_height)
 
     @property
     def is_open(self) -> bool:
@@ -157,3 +175,30 @@ class CameraManager:
 
     def __exit__(self, *args):
         self.stop()
+
+    def _try_reconnect(self):
+        """Attempt to reconnect the camera after consecutive read failures."""
+        if self._reconnect_attempts >= self._max_reconnect_attempts:
+            logger.error("Camera reconnection failed after %d attempts",
+                         self._max_reconnect_attempts)
+            return
+
+        self._reconnect_attempts += 1
+        self._consecutive_failures = 0
+        backoff = min(2.0, 0.5 * self._reconnect_attempts)  # 0.5s, 1.0s, 1.5s, 2.0s
+
+        logger.warning(
+            "Camera read failed %d times, reconnecting (attempt %d/%d, backoff=%.1fs)...",
+            self._max_failures_before_reconnect,
+            self._reconnect_attempts, self._max_reconnect_attempts, backoff,
+        )
+
+        time.sleep(backoff)
+
+        try:
+            if self._cap:
+                self._cap.release()
+            self.open()
+            logger.info("Camera reconnected successfully")
+        except Exception as e:
+            logger.error("Camera reconnection error: %s", e)

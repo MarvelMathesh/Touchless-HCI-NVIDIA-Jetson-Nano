@@ -59,6 +59,11 @@ class GestureClassifier:
         # Minimum extended fingers to accept a trajectory point (hand-pose gate)
         self._swipe_min_fingers = dyn_config.get("swipe_min_fingers", 3)
 
+        # Post-swipe cooldown: discard trajectory points for this duration
+        # after a swipe fires to prevent reverse-swipe false triggers.
+        self._swipe_cooldown_sec = dyn_config.get("swipe_cooldown_sec", 0.5)
+        self._swipe_cooldown_until = 0.0  # Timestamp when cooldown expires
+
         # User adaptation offsets {GestureType -> float}
         self._adaptation_offsets = {}
 
@@ -92,15 +97,19 @@ class GestureClassifier:
         palm_center = self._extractor.get_palm_center(landmarks)
 
         if extended_count >= self._swipe_min_fingers:
-            # Apply EMA smoothing to filter MediaPipe landmark jitter
-            if self._smoothed_palm is None:
-                self._smoothed_palm = palm_center.copy()
+            # Skip trajectory recording during post-swipe cooldown
+            if time.time() < self._swipe_cooldown_until:
+                pass  # Discard — hand is returning to neutral
             else:
-                self._smoothed_palm = (
-                    self._ema_alpha * palm_center
-                    + (1.0 - self._ema_alpha) * self._smoothed_palm
-                )
-            self._trajectory.append((self._smoothed_palm.copy(), time.time()))
+                # Apply EMA smoothing to filter MediaPipe landmark jitter
+                if self._smoothed_palm is None:
+                    self._smoothed_palm = palm_center.copy()
+                else:
+                    self._smoothed_palm = (
+                        self._ema_alpha * palm_center
+                        + (1.0 - self._ema_alpha) * self._smoothed_palm
+                    )
+                self._trajectory.append((self._smoothed_palm.copy(), time.time()))
 
         # Try dynamic gesture classification FIRST — a detected swipe
         # always takes priority because the concurrent static result
@@ -370,6 +379,8 @@ class GestureClassifier:
             gesture = GestureType.SWIPE_RIGHT if dx > 0 else GestureType.SWIPE_LEFT
             self._trajectory.clear()
             self._smoothed_palm = None
+            # Start post-swipe cooldown to prevent reverse-swipe
+            self._swipe_cooldown_until = time.time() + self._swipe_cooldown_sec
             return GestureResult(gesture, confidence, is_dynamic=True)
 
         return None
